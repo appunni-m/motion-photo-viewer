@@ -549,6 +549,14 @@ async function main() {
         });
       }
 
+      if (item.size) {
+        await checkAsync(`${item.name}: sized by the grid, not a tile`, async () => {
+          const bytes = bytesOf();
+          const { result } = await extract(core, bytes);
+          assertEqual([result.still?.width, result.still?.height], item.size, 'still dimensions');
+        });
+      }
+
       if (item.orientation) {
         await checkAsync(`${item.name}: EXIF orientation is read`, async () => {
           const bytes = bytesOf();

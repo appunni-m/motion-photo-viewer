@@ -12,12 +12,32 @@ const STILL_EXT = new Set([
 ]);
 const VIDEO_EXT = new Set(['mp4', 'm4v', 'mov', '3gp', '3g2', 'mkv', 'webm', 'avi', 'hevc', '265']);
 
+/**
+ * Names that sit next to real photographs and are never photographs.
+ *
+ * A folder copied off a Mac carries an AppleDouble file for every picture
+ * (`._IMG_3207.heic`, 4 kB of resource fork). They have the extension of an
+ * image, so without this they become a grid full of unreadable tiles - half the
+ * folder, on one real sample.
+ */
+export function isJunk(name) {
+  return (
+    name.startsWith('._') ||
+    name === '.DS_Store' ||
+    name === 'Thumbs.db' ||
+    name === 'desktop.ini' ||
+    name.startsWith('.Spotlight-') ||
+    name.startsWith('.fseventsd')
+  );
+}
+
 export function extensionOf(name) {
   const at = name.lastIndexOf('.');
   return at <= 0 ? '' : name.slice(at + 1).toLowerCase();
 }
 
 export function isScannable(file) {
+  if (isJunk(file.name)) return false;
   const ext = extensionOf(file.name);
   return STILL_EXT.has(ext) || VIDEO_EXT.has(ext);
 }
@@ -79,7 +99,7 @@ export function entryFromFile(file, path = '') {
     ext,
     size: file.size,
     lastModified: file.lastModified,
-    scannable: STILL_EXT.has(ext) || VIDEO_EXT.has(ext),
+    scannable: !isJunk(name) && (STILL_EXT.has(ext) || VIDEO_EXT.has(ext)),
     family: VIDEO_EXT.has(ext) ? 'video' : 'unknown',
     result: null,
     stats: null,

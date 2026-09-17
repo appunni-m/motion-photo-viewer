@@ -419,7 +419,13 @@ function openViewer(entry) {
     ['Detection', entry.result?.motion?.method ?? '—'],
     ['Confidence', entry.result?.motion?.confidence ?? '—'],
     ['Video', entry.result?.motion?.video ? `${formatBytes(entry.result.motion.video.len)} at byte ${entry.result.motion.video.off.toLocaleString()}` : '—'],
-    ['Codec', entry.result?.motion?.codec ?? (entry.live ? 'companion file' : '—')],
+    [
+      'Codec',
+      entry.result?.motion?.codec ??
+        (entry.live
+          ? `${entry.live.entry.name} — ${entry.live.entry.result?.motion?.codec ?? 'unknown'}`
+          : '—'),
+    ],
     ['Motion length', formatDuration(entry.result?.motion?.durationMs) || '—'],
     ['Marker frame', entry.result?.motion?.timestampUs ? `${(entry.result.motion.timestampUs / 1e6).toFixed(2)}s into the clip` : '—'],
     ['Camera', [entry.result?.meta?.make, entry.result?.meta?.model].filter(Boolean).join(' ') || '—'],
@@ -518,22 +524,36 @@ function playMotion() {
 
 /** Explains a clip the engine really could not decode, without overclaiming. */
 function reportPlaybackFailure(entry) {
-  const codec = entry?.result?.motion?.codec ?? '';
+  // A Live Photo keeps its clip in a companion file, so the codec belongs to
+  // that file's own scan rather than to the still.
+  const companion = entry?.live?.entry;
+  const codec = entry?.result?.motion?.codec ?? companion?.result?.motion?.codec ?? '';
   const hevc = /^(hvc1|hev1)/.test(codec);
   const heicStill = entry?.result?.container === 'heif';
   const parts = [];
-  if (hevc && heicStill) {
+
+  if (companion) {
+    parts.push(
+      `This is a Live Photo: its clip is the companion file ${companion.name}` +
+        (codec ? ` (${codec})` : '') +
+        ', which this browser cannot decode.',
+    );
+  } else if (hevc && heicStill) {
     parts.push('Both the picture and the clip in this HEIC are HEVC-coded, and this browser has no HEVC decoder.');
-  } else if (hevc) {
-    parts.push(`This browser cannot decode the clip's ${codec || 'HEVC'} video.`);
+  } else if (codec) {
+    parts.push(`This browser cannot decode the clip's ${codec} video.`);
   } else {
     parts.push('This browser cannot play the extracted clip.');
   }
+
   parts.push('The file itself is intact and nothing was modified.');
-  parts.push('“Save extracted video” writes out the camera’s own MP4, and Safari — or any HEVC-capable player — opens it.');
-  if (hevc && heicStill) {
-    parts.push('For the same reason the still cannot be drawn here.');
-  }
+  parts.push(
+    hevc
+      ? 'Safari, or any HEVC-capable player, opens it.'
+      : 'A player that supports this codec opens it.',
+  );
+  parts.push('“Save extracted video” writes the clip out byte for byte, so nothing is lost.');
+  if (hevc && heicStill) parts.push('For the same reason the still cannot be drawn here.');
   showPlaceholder(parts.join(' '));
 }
 

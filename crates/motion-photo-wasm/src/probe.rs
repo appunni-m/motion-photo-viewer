@@ -441,14 +441,24 @@ fn probe_inner(s: &Sparse, file_size: u64) -> Outcome {
         out.method = Some("container");
         out.video = Some((0, file_size));
         out.playable = true;
-        out.plan = Some(VideoPlan {
+        let mut plan = VideoPlan {
             parts: vec![Part::Slice {
                 off: 0,
                 len: file_size,
             }],
             direct: true,
             ..Default::default()
-        });
+        };
+        // Describe the clip as well: its codec, size and duration live in the
+        // `moov`, which sits at one end of the file in every real MP4, so the
+        // windows usually already have it. A Live Photo's companion is a plain
+        // video, and without this the viewer cannot say what it failed to play.
+        if let Some(moov) = mp4::find_moov_candidates(s, file_size).into_iter().next() {
+            if let Some(parsed) = mp4::parse_moov(s, moov) {
+                fill_from_moov(&mut plan, &parsed);
+            }
+        }
+        out.plan = Some(plan);
         return out;
     }
 

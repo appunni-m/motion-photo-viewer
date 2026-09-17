@@ -79,6 +79,7 @@ pub struct Meta {
     pub refs: Vec<ItemRef>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    width_height: Option<(u32, u32)>,
 }
 
 impl Meta {
@@ -223,24 +224,96 @@ pub fn parse_meta(s: &Sparse, meta: &BoxHdr) -> Option<Meta> {
         parse_iref(s, &iref, &mut out);
     }
     if let Some(iprp) = child(s, &inner, b"iprp") {
-        if let Some(ipco) = child(s, &iprp, b"ipco") {
-            for prop in boxes(s, ipco.data_start, ipco.data_end) {
-                if prop.is(b"ispe") {
-                    // FullBox: version/flags + width + height
-                    if let (Some(w), Some(h)) =
-                        (s.u32(prop.data_start + 4), s.u32(prop.data_start + 8))
-                    {
-                        if w > 0 && h > 0 && w < 1_000_000 && h < 1_000_000 {
-                            out.width = Some(w);
-                            out.height = Some(h);
-                            break;
-                        }
-                    }
-                }
+        // Dimensions come from the *primary* item's `ispe`, resolved through
+        // `ipma`. Taking the first `ispe` in the property list gives a tile's
+        // size instead: an iPhone HEIC of 1402x1363 is a grid of 512x512 tiles,
+        // and reporting 512x512 is simply wrong.
+        let ipco = child(s, &iprp, b"ipco");
+        if let Some(ipco) = &ipco {
+            let properties: Vec<BoxHdr> = boxes(s, ipco.data_start, ipco.data_end).collect();
+            let mut associated = None;
+            if let (Some(primary), Some(ipma)) = (out.primary, child(s, &iprp, b"ipma")) {
+                associated = ipma_ispe(s, &ipma, primary, &properties);
+            }
+            out.width_height = associated.or_else(|| largest_ispe(s, &properties));
+        }
+    }
+    if let Some((w, h)) = out.width_height {
+        out.width = Some(w);
+        out.height = Some(h);
+    } else {
+        out.width = None;
+        out.height = None;
+    }
+    Some(out)
+}
+
+/// The `ispe` associated with `primary` through `ipma`, when it can be found.
+///
+/// `ipma` maps items to indices in the ordered `ipco` property list; the width
+/// of an index field depends on the version and on the flags' low bit.
+fn ipma_ispe(s: &Sparse, ipma: &BoxHdr, primary: u32, properties: &[BoxHdr]) -> Option<(u32, u32)> {
+    let version = s.byte(ipma.data_start)?;
+    let flags = s.read(ipma.data_start + 1, 3)?;
+    let wide_index = flags[2] & 1 == 1;
+    let count = s.u32(ipma.data_start + 4)?;
+    let mut p = ipma.data_start + 8;
+    for _ in 0..count.min(512) {
+        let id = if version < 1 {
+            let v = s.u16(p)?;
+            p += 2;
+            v as u32
+        } else {
+            let v = s.u32(p)?;
+            p += 4;
+            v
+        };
+        let associations = s.byte(p)? as usize;
+        p += 1;
+        let mut found = None;
+        for _ in 0..associations.min(64) {
+            let index: u32 = if wide_index {
+                let v = (s.u16(p)? & 0x7fff) as u32;
+                p += 2;
+                v
+            } else {
+                let v = (s.byte(p)? & 0x7f) as u32;
+                p += 1;
+                v
+            };
+            if id == primary {
+                found = Some(index as usize);
+            }
+        }
+        if let Some(index) = found {
+            let property = properties.get(index.checked_sub(1)?)?;
+            if property.is(b"ispe") {
+                return ispe_size(s, property);
             }
         }
     }
-    Some(out)
+    None
+}
+
+/// The largest `ispe` in the property list: a fallback for files whose `ipma`
+/// cannot be read, and the right answer whenever tiles are smaller than the
+/// picture they compose.
+fn largest_ispe(s: &Sparse, properties: &[BoxHdr]) -> Option<(u32, u32)> {
+    properties
+        .iter()
+        .filter(|p| p.is(b"ispe"))
+        .filter_map(|p| ispe_size(s, p))
+        .max_by_key(|(w, h)| (*w as u64) * (*h as u64))
+}
+
+fn ispe_size(s: &Sparse, ispe: &BoxHdr) -> Option<(u32, u32)> {
+    // FullBox: version/flags, then width and height.
+    let w = s.u32(ispe.data_start + 4)?;
+    let h = s.u32(ispe.data_start + 8)?;
+    if w == 0 || h == 0 || w > 1_000_000 || h > 1_000_000 {
+        return None;
+    }
+    Some((w, h))
 }
 
 fn parse_iinf(s: &Sparse, iinf: &BoxHdr, out: &mut Meta) {

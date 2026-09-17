@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.1
+
+Fixes found by pointing the viewer at a real photo library.
+
+- **HEIC dimensions were a tile's, not the picture's.** An iPhone HEIC of
+  1402×1363 is a grid of 512×512 tiles, and taking the first `ispe` property
+  reported 512×512. Dimensions now come from the primary item's `ispe`, resolved
+  through `ipma`, with the largest property as a fallback for files whose
+  association table cannot be read. Verified against ExifTool on three iPhone
+  files.
+- **macOS metadata appeared as tiles.** A folder copied off a Mac carries an
+  AppleDouble file for every picture (`._IMG_3207.heic`, 4 kB of resource fork)
+  with the extension of an image. In one real folder 33 of 66 "media" files were
+  these. They are now skipped, as are `.DS_Store`, `Thumbs.db`, `desktop.ini` and
+  the Spotlight and fseventsd directories.
+- **A fixed bug could stay visible.** The service worker served the app
+  cache-first, so after a deploy the browser kept running the previous
+  JavaScript and WebAssembly until the cache was cleared — which is how a HEIC
+  that had been misclassified as a motion photo kept showing a play button. The
+  worker is now network-first with the cache as its offline fallback, so a
+  deploy takes effect on the next load and the app still works offline.
+- **Plain videos carried no metadata**, because the container route returned
+  before reading the `moov`. Codec, size and duration are now reported, which is
+  what lets a Live Photo's failure name its companion's codec.
+- **A Live Photo failure now names the companion file and its codec** instead of
+  a generic message, for both the tile and the inspector.
+
 ## 0.1.0
 
 First release. A folder of pictures goes in; every motion picture in it comes

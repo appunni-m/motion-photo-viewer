@@ -1,6 +1,6 @@
 [package]
 name = "motion-photo-wasm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # `div_ceil` (stable 1.73) is the newest API used; the pinned toolchain in
 # rust-toolchain.toml is what CI and the release build actually compile with.

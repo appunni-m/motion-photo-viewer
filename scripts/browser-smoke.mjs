@@ -411,6 +411,67 @@ try {
   });
   assert(hoveredOpacity === '0', `hovering a still keeps the play affordance hidden (${hoveredOpacity})`);
 
+  // ---- macOS metadata must not become tiles -------------------------------
+  const junkTiles = await page.evaluate(() =>
+    [...document.querySelectorAll('.tile')].filter((t) => t.querySelector('.tile-name').textContent.startsWith('._')).length,
+  );
+  assert(junkTiles === 0, `AppleDouble sidecars are skipped (${junkTiles} shown)`);
+
+  // ---- a tile-grid HEIC reports the picture's size, not a tile's ----------
+  const gridSize = await page.evaluate(() => {
+    const tile = [...document.querySelectorAll('.tile')].find(
+      (t) => t.querySelector('.tile-name')?.textContent === 'plain.heic',
+    );
+    return tile?.querySelector('.tile-meta')?.textContent ?? '';
+  });
+  assert(
+    /4032×3024/.test(gridSize),
+    `a grid HEIC reports the assembled size (${gridSize.trim().slice(0, 80)})`,
+  );
+
+  // ---- a Live Photo failure names the companion and its codec -------------
+  {
+    const opened = await page.evaluate(() => {
+      const tile = [...document.querySelectorAll('.tile')].find(
+        (t) => t.querySelector('.tile-name')?.textContent === 'paired-hevc.jpg',
+      );
+      if (!tile) return false;
+      tile.click();
+      return true;
+    });
+    if (!opened) {
+      bad('the Live Photo pair is missing from the grid');
+    } else {
+      await page.waitForSelector('#viewer[open]', { timeout: 10000 });
+      const facts = await page.locator('#viewer-facts').textContent();
+      assert(
+        /paired-hevc\.mov/.test(facts) && /hvc1/.test(facts),
+        'the inspector names the companion file and its codec',
+      );
+      if (await page.locator('#viewer-play').isVisible()) {
+        await page.locator('#viewer-play').click();
+        const explained = await page
+          .waitForFunction(
+            () => {
+              const placeholder = document.getElementById('viewer-placeholder');
+              return !placeholder.hidden && /paired-hevc\.mov/.test(placeholder.textContent);
+            },
+            null,
+            { timeout: 20000 },
+          )
+          .then(() => true)
+          .catch(() => false);
+        const text = await page.locator('#viewer-placeholder').textContent();
+        assert(
+          explained && /HEVC/.test(text),
+          `the failure names the companion and the codec (${text.trim().slice(0, 90)}…)`,
+        );
+      }
+      await page.locator('#viewer-quit').click();
+      await page.waitForTimeout(200);
+    }
+  }
+
   // ---- an unsupported codec must still be attempted -----------------------
   const hevcAttempt = await page.evaluate(async () => {
     const tile = [...document.querySelectorAll('.tile')].find(

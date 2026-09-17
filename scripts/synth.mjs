@@ -563,7 +563,7 @@ export function withExifOrientation(jpeg, orientation, thumbnail) {
  * normal Samsung or Apple photo looks like, and it must classify as a still -
  * `hvc1` items in a HEIC are *images*, not video.
  */
-export function heicGridOnly({ tileSize = 900, tiles = 3 } = {}) {
+export function heicGridOnly({ tileSize = 900, tiles = 3, tileEdge = 512, gridWidth = 4032, gridHeight = 3024 } = {}) {
   const enc = (text) => new TextEncoder().encode(`${text}\0`);
   const infe = (id, type, name, contentType) => {
     const parts = [u32(2 << 24), u16(id), u16(0), fourcc(type), enc(name)];
@@ -585,8 +585,22 @@ export function heicGridOnly({ tileSize = 900, tiles = 3 } = {}) {
     infe(xmpId, 'mime', '', 'application/rdf+xml'),
   );
   const pitm = box('pitm', u32(0), u16(1));
-  // The Exif item gets an extent too, which is what a real file looks like.
-  const ispe = box('iprp', box('ipco', box('ispe', u32(0), u32(4032), u32(3024))));
+
+  // Two `ispe` properties, in the order a real file writes them: the tile size
+  // first, the assembled picture second. Taking the first one reports 512x512
+  // for a 4032x3024 photograph, which is what `ipma` exists to prevent.
+  const ipco = box(
+    'ipco',
+    box('ispe', u32(0), u32(tileEdge), u32(tileEdge)),
+    box('ispe', u32(0), u32(gridWidth), u32(gridHeight)),
+  );
+  const ipma = box(
+    'ipma',
+    u32(0),
+    u32(itemCount),
+    u16(1), new Uint8Array([1, 0x80 | 2]), // the grid is described by property 2
+    ...Array.from({ length: tiles }, (_, i) => concat([u16(2 + i), new Uint8Array([1, 1])])),
+  );
 
   /** iloc version 0: two size bytes, then (id, data_ref, count, offset, length). */
   const buildMeta = (tileOffset, gridOffset, exifOffset, exifLength) => {
@@ -600,7 +614,15 @@ export function heicGridOnly({ tileSize = 900, tiles = 3 } = {}) {
     const iloc = box('iloc', u32(0), new Uint8Array([0x44, 0x00]), u16(entries.length), ...entries);
     const dimg = box('dimg', u16(1), u16(tiles), ...Array.from({ length: tiles }, (_, i) => u16(2 + i)));
     const cdsc = box('cdsc', u16(exifId), u16(1), u16(1));
-    return box('meta', u32(0), pitm, iinf, iloc, box('iref', u32(0), dimg, cdsc), ispe);
+    return box(
+      'meta',
+      u32(0),
+      pitm,
+      iinf,
+      iloc,
+      box('iref', u32(0), dimg, cdsc),
+      box('iprp', ipco, ipma),
+    );
   };
 
   const ftypBox = ftyp('heic', ['heic', 'mif1']);
@@ -616,5 +638,12 @@ export function heicGridOnly({ tileSize = 900, tiles = 3 } = {}) {
     ...Array.from({ length: tiles }, () => tileBytes),
     new Uint8Array(exifLength).fill(0x22),
   );
-  return { file: concat([ftypBox, metaBox, mdat]), tileOffset, tileSize };
+  return {
+    file: concat([ftypBox, metaBox, mdat]),
+    tileOffset,
+    tileSize,
+    gridWidth,
+    gridHeight,
+    tileEdge,
+  };
 }

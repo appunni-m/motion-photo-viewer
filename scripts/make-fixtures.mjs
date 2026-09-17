@@ -273,15 +273,36 @@ manifest.files.push({ name: 'plain-still.jpg', kind: 'still', note: 'a plain sti
 //     are `hvc1` items with extents, which is exactly what a careless video-item
 //     test mistakes for a clip.
 {
-  put('plain.heic', heicGridOnly({}).file);
+  const grid = heicGridOnly({});
+  put('plain.heic', grid.file);
   manifest.files.push({
     name: 'plain.heic',
     kind: 'still',
-    note: 'HEVC image tiles only: must never be classified as motion',
+    size: [grid.gridWidth, grid.gridHeight],
+    note: 'HEVC image tiles only: never motion, and sized by the grid, not a tile',
   });
 }
 
-// 11. Something that is not media at all, to prove it is skipped, not parsed.
+// 11. A Live Photo whose companion is HEVC: the failure has to name the
+//     companion and the codec rather than leaving the user guessing.
+{
+  put('paired-hevc.jpg', photo);
+  put('paired-hevc.mov', readFileSync(join(OUT, 'video-hevc.mp4')));
+  manifest.files.push({
+    name: 'paired-hevc.jpg',
+    kind: 'still',
+    pairs: 'paired-hevc.mov',
+    note: 'Live Photo pair with an HEVC companion',
+  });
+}
+
+// 12. macOS metadata that must never appear as a tile.
+{
+  put('._junk.jpg', new Uint8Array(4096).fill(0x00));
+  manifest.files.push({ name: '._junk.jpg', kind: 'junk', note: 'AppleDouble sidecar' });
+}
+
+// 13. Something that is not media at all, to prove it is skipped, not parsed.
 put('notes.txt', new TextEncoder().encode('not a picture\n'));
 manifest.files.push({ name: 'notes.txt', kind: 'other' });
 

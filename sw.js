@@ -2,8 +2,9 @@
  * Offline shell.
  *
  * The viewer is useful precisely because it needs nothing but its own files, so
- * the shell is cached after the first visit and every later visit is served
- * from the cache. Nothing the user opens is ever cached: only the app itself.
+ * the shell is cached after the first visit and works offline afterwards.
+ * Requests go to the network first - see the fetch handler - and the cache is
+ * the fallback. Nothing the user opens is ever cached: only the app itself.
  */
 
 const BUILD = '__BUILD_ID__';
@@ -44,30 +45,30 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // Navigations: network first so a new build is picked up, cache as fallback.
-  if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE).then((cache) => cache.put('./index.html', copy)).catch(() => {});
-          return response;
-        })
-        .catch(() => caches.match('./index.html').then((hit) => hit ?? Response.error())),
-    );
-    return;
-  }
-
+  // Network first, cache as the fallback. Serving the shell cache-first kept
+  // working offline but also kept serving *yesterday's* JavaScript and
+  // WebAssembly after a deploy, so a fixed bug stayed visible until the user
+  // cleared their cache. The cache is now what it should be for an app whose
+  // data never leaves the disk: an offline copy, not the source of truth.
   event.respondWith(
-    caches.match(request).then((hit) => {
-      if (hit) return hit;
-      return fetch(request).then((response) => {
-        if (response.ok && response.type === 'basic') {
+    fetch(request)
+      .then((response) => {
+        // Only whole, same-origin responses are worth keeping; a 206 from a
+        // range request must pass through untouched.
+        if (response.ok && response.status === 200 && response.type === 'basic') {
           const copy = response.clone();
           caches.open(CACHE).then((cache) => cache.put(request, copy)).catch(() => {});
         }
         return response;
-      });
-    }),
+      })
+      .catch(async () => {
+        const hit = await caches.match(request);
+        if (hit) return hit;
+        if (request.mode === 'navigate') {
+          const shell = await caches.match('./index.html');
+          if (shell) return shell;
+        }
+        return Response.error();
+      }),
   );
 });
