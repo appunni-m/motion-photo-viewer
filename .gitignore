@@ -1,0 +1,17 @@
+# Build output
+/target/
+/_site/
+/wasm/.motion_photo_wasm.opt.wasm
+
+# Generated test media (rebuild with `make fixtures`)
+/tests/fixtures/generated/
+
+# Node
+/node_modules/
+npm-debug.log*
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

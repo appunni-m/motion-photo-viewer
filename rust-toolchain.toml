@@ -1,0 +1,7 @@
+[toolchain]
+# Pinned so the checked-in .wasm artifact is byte-reproducible: the Pages build
+# recompiles the crate and fails if the committed module drifts.
+channel = "1.96.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

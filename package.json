@@ -1,0 +1,31 @@
+{
+  "name": "motion-photo-viewer",
+  "version": "0.1.0",
+  "description": "Preview Samsung and Google motion photos, Live Photos and HEIC motion pictures in a folder, entirely on-device in WebAssembly.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/appunni-m/motion-photo-viewer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/appunni-m/motion-photo-viewer/issues"
+  },
+  "homepage": "https://appunni-m.github.io/motion-photo-viewer/",
+  "scripts": {
+    "test": "npm run verify",
+    "verify": "node scripts/verify.mjs",
+    "verify:browser": "node scripts/browser-smoke.mjs",
+    "verify:all": "npm run verify && npm run verify:browser",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "check:real": "node scripts/check-real-samples.mjs",
+    "check:pages": "node scripts/check-pages-artifact.mjs",
+    "wasm": "node scripts/build-wasm.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}

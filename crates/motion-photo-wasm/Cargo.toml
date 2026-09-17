@@ -1,0 +1,20 @@
+[package]
+name = "motion-photo-wasm"
+version = "0.1.0"
+edition = "2021"
+# `div_ceil` (stable 1.73) is the newest API used; the pinned toolchain in
+# rust-toolchain.toml is what CI and the release build actually compile with.
+rust-version = "1.73"
+description = "Motion photo (Samsung / Google / HEIC) detection and extraction compiled to WebAssembly"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+# Deliberately zero dependencies. The published artifact is a raw-ABI
+# WebAssembly module loaded with WebAssembly.instantiate, so there is no
+# wasm-bindgen runtime, no JS glue to keep in sync, and no version matrix to
+# break the Pages build. Everything the browser needs is in the .wasm file.
+[dependencies]

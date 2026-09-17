@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motion Photo Viewer — offline, in-browser preview of Samsung &amp; Google motion photos</title>
+<meta name="description" content="Preview every motion photo, Live Photo and HEIC motion picture in a folder. Detection and extraction run entirely in WebAssembly on your device: no uploads, no network, no copies.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1220'/%3E%3Cpath d='M9 8.5v15l13-7.5z' fill='%2338bdf8'/%3E%3Ccircle cx='22.5' cy='10' r='3.5' fill='%23f472b6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip-link" href="#grid">Skip to the results</a>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect width="32" height="32" rx="7" fill="currentColor" opacity=".12"/>
+      <path d="M9 8.5v15l13-7.5z" fill="currentColor"/>
+      <circle cx="22.5" cy="10" r="3.5" fill="#f472b6"/>
+    </svg>
+    <div>
+      <h1>Motion Photo Viewer</h1>
+      <p class="tagline">Samsung &amp; Google motion photos, Live Photos and HEIC motion pictures — decoded on this device, never uploaded.</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <button id="pick-folder" class="primary" type="button">Open folder</button>
+    <button id="pick-files" type="button">Choose files</button>
+    <button id="cancel-scan" type="button" hidden>Stop</button>
+  </div>
+</header>
+
+<main>
+  <section id="dropzone" class="dropzone" aria-label="Folder drop target">
+    <div class="dropzone-inner">
+      <p class="dropzone-title">Drop a folder here</p>
+      <p class="dropzone-hint">
+        Every file is inspected locally for an embedded video track. Only a small
+        header and trailer of each file is read — the pictures themselves never
+        leave your disk and nothing is copied into storage.
+      </p>
+      <noscript><p class="warn">This viewer needs JavaScript and WebAssembly enabled.</p></noscript>
+    </div>
+  </section>
+
+  <section id="scan-panel" class="panel" hidden aria-live="polite">
+    <div class="progress">
+      <div class="progress-bar" id="progress-bar"><span id="progress-fill"></span></div>
+      <p id="progress-text" class="mono">Starting…</p>
+    </div>
+    <p id="scan-notes" class="scan-notes"></p>
+  </section>
+
+  <section id="summary" class="summary" hidden>
+    <div class="stat"><span id="stat-motion" class="stat-value">0</span><span class="stat-label">motion pictures</span></div>
+    <div class="stat"><span id="stat-live" class="stat-value">0</span><span class="stat-label">Live Photos</span></div>
+    <div class="stat"><span id="stat-stills" class="stat-value">0</span><span class="stat-label">stills</span></div>
+    <div class="stat"><span id="stat-videos" class="stat-value">0</span><span class="stat-label">videos</span></div>
+    <div class="stat"><span id="stat-failed" class="stat-value">0</span><span class="stat-label">unreadable</span></div>
+    <div class="stat wide"><span id="stat-bytes" class="stat-value">0 B</span><span class="stat-label" id="stat-bytes-label">read</span></div>
+  </section>
+
+  <section id="toolbar" class="toolbar" hidden>
+    <div class="filters" role="group" aria-label="Filter by kind">
+      <button class="chip is-on" data-filter="all" type="button">All</button>
+      <button class="chip" data-filter="motion" type="button">Motion</button>
+      <button class="chip" data-filter="live" type="button">Live</button>
+      <button class="chip" data-filter="still" type="button">Stills</button>
+      <button class="chip" data-filter="video" type="button">Videos</button>
+      <button class="chip" data-filter="problem" type="button">Issues</button>
+    </div>
+    <div class="toolbar-right">
+      <label class="search">
+        <span class="visually-hidden">Search by file name, camera or date</span>
+        <input id="search" type="search" placeholder="Filter by name, camera, date…" autocomplete="off">
+      </label>
+      <label class="sort">
+        <span class="visually-hidden">Sort order</span>
+        <select id="sort">
+          <option value="name">Name</option>
+          <option value="date-desc">Newest first</option>
+          <option value="date-asc">Oldest first</option>
+          <option value="size-desc">Largest first</option>
+          <option value="kind">Kind</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section id="grid" class="grid" aria-label="Results"></section>
+  <p id="empty" class="empty" hidden></p>
+</main>
+
+<dialog id="viewer" class="viewer">
+  <div class="viewer-shell">
+    <header class="viewer-head">
+      <div class="viewer-title">
+        <h2 id="viewer-name">—</h2>
+        <p id="viewer-sub" class="mono">—</p>
+      </div>
+      <div class="viewer-actions">
+        <button id="viewer-quit" type="button" title="Close (Esc)">Close</button>
+      </div>
+    </header>
+
+    <div class="viewer-body">
+      <div class="stage">
+        <figure class="stage-media">
+          <img id="viewer-still" alt="" hidden>
+          <video id="viewer-video" playsinline hidden controls preload="none"></video>
+          <div id="viewer-placeholder" class="placeholder">No preview available for this format in this browser.</div>
+        </figure>
+        <div class="stage-bar">
+          <button id="viewer-play" class="primary" type="button" hidden>Play motion</button>
+          <button id="viewer-still-btn" type="button" hidden>Back to still</button>
+          <span id="viewer-time" class="mono"></span>
+          <span class="spacer"></span>
+          <button id="viewer-prev" type="button" title="Previous (←)">Prev</button>
+          <button id="viewer-next" type="button" title="Next (→)">Next</button>
+        </div>
+      </div>
+
+      <aside class="inspector">
+        <div id="viewer-badges" class="badges"></div>
+        <dl id="viewer-facts" class="facts"></dl>
+        <details class="diagnostics" id="viewer-diagnostics">
+          <summary>Detection report</summary>
+          <pre id="viewer-report" class="mono"></pre>
+          <div class="diagnostics-actions">
+            <button id="viewer-copy" type="button">Copy report</button>
+            <button id="viewer-save" type="button">Save extracted video</button>
+            <button id="viewer-deep" type="button">Deep scan this file</button>
+          </div>
+          <p class="fineprint">
+            A deep scan re-reads more of this one file. Streaming the video into a
+            player is not a copy — a player reads the same bytes straight from
+            your disk through the file handle.
+          </p>
+        </details>
+      </aside>
+    </div>
+  </div>
+</dialog>
+
+<footer class="footer">
+  <p>
+    All parsing happens in a WebAssembly module on this device. There is no
+    server, no upload, no cache and no thumbnail store: reload the page and every
+    trace is gone.
+  </p>
+  <p class="fineprint">
+    Formats: Samsung and Google motion photos (JPEG or HEIC with an appended MP4),
+    Motion Photo 1.0 container directories, HEIF/HEIC video items, Apple Live
+    Photo pairs and plain videos. <a href="docs/FORMATS.md">How detection works</a>.
+  </p>
+</footer>
+
+<input id="file-input" type="file" multiple accept="image/*,video/*,.heic,.heif,.avif,.jpg,.jpeg,.png,.webp,.mp4,.mov,.3gp" hidden>
+<input id="folder-input" type="file" webkitdirectory directory multiple hidden>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

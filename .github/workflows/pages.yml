@@ -1,0 +1,169 @@
+name: Verify and deploy Motion Photo Viewer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: motion-photo-viewer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The crate is the product: build it once, test it, and hand the exact module
+  # to every later job so the deployed site can never drift from the source.
+  wasm:
+    name: Build the WebAssembly module
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+
+      - name: Cache the cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Install the release optimizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y binaryen
+
+      - name: Lint the crate
+        run: make rust-lint
+
+      - name: Run the Rust unit tests
+        run: make rust-test
+
+      - name: Build the module
+        run: WASM_OPT_REQUIRED=1 make wasm
+
+      - name: Report staleness of the committed module (advisory)
+        continue-on-error: true
+        run: make wasm-check
+
+      - name: Upload the module
+        uses: actions/upload-artifact@v7
+        with:
+          name: motion-photo-wasm
+          path: wasm/motion_photo_wasm.wasm
+          if-no-files-found: error
+
+  verify:
+    name: Verify (Node ${{ matrix.node }})
+    needs: wasm
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 24]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v7
+
+      - name: Use Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Use the freshly built module
+        uses: actions/download-artifact@v8
+        with:
+          name: motion-photo-wasm
+          path: wasm
+
+      - name: Install ffmpeg for the real-media checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
+
+      - name: Install locked dependencies
+        run: make install
+
+      - name: Generate real media fixtures
+        run: make fixtures
+
+      - name: Run the deterministic checks
+        run: make verify
+
+  build:
+    name: Assemble and smoke-test the site
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v7
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Use the freshly built module
+        uses: actions/download-artifact@v8
+        with:
+          name: motion-photo-wasm
+          path: wasm
+
+      - name: Install the release optimizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y binaryen ffmpeg
+
+      - name: Install locked dependencies
+        run: make install
+
+      - name: Generate real media fixtures
+        run: make fixtures
+
+      - name: Assemble and validate the static site
+        run: make package-pages PAGES_DIR=_site
+
+      - name: Install Chromium for the browser smoke test
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke-test the assembled site
+        run: make verify-browser
+
+      - name: Upload the Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5
