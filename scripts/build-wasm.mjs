@@ -55,24 +55,34 @@ process.stdout.write(`  cargo output: ${bytes.length} bytes (sha256 ${sha256(byt
 // deliberately conservative: shrink, drop metadata, no new proposals.
 if (which('wasm-opt')) {
   const optimized = join(OUT_DIR, '.motion_photo_wasm.opt.wasm');
-  run('wasm-opt', [
-    '-Oz',
-    '--strip-debug',
-    '--strip-producers',
-    '--strip-dwarf',
-    '--vacuum',
-    '--dce',
-    '--enable-mutable-globals',
-    '--enable-sign-ext',
-    '--enable-bulk-memory',
-    '--enable-nontrapping-float-to-int',
-    TARGET,
-    '-o',
-    optimized,
-  ]);
-  const before = bytes.length;
-  bytes = readFileSync(optimized);
-  process.stdout.write(`  wasm-opt:     ${bytes.length} bytes (${before - bytes.length} saved)\n`);
+  try {
+    run('wasm-opt', [
+      '-Oz',
+      '--strip-debug',
+      '--strip-producers',
+      '--strip-dwarf',
+      '--vacuum',
+      '--dce',
+      '--enable-mutable-globals',
+      '--enable-sign-ext',
+      '--enable-bulk-memory',
+      '--enable-nontrapping-float-to-int',
+      TARGET,
+      '-o',
+      optimized,
+    ]);
+    const before = bytes.length;
+    bytes = readFileSync(optimized);
+    process.stdout.write(`  wasm-opt:     ${bytes.length} bytes (${before - bytes.length} saved)\n`);
+  } catch (error) {
+    // A binaryen that does not understand the module must never break a local
+    // build: the unoptimized module is correct, just larger. The release build
+    // sets WASM_OPT_REQUIRED=1 so a broken flag combination is still caught.
+    if (process.env.WASM_OPT_REQUIRED === '1') {
+      throw new Error(`wasm-opt failed and WASM_OPT_REQUIRED=1: ${error.message}`);
+    }
+    process.stdout.write(`  wasm-opt:     failed (${error.message.split('\n')[0]}); shipping the cargo output\n`);
+  }
 } else if (process.env.WASM_OPT_REQUIRED === '1') {
   throw new Error('WASM_OPT_REQUIRED=1 but wasm-opt is not on PATH');
 } else {

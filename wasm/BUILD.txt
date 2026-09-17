@@ -1,0 +1,7 @@
+artifact: wasm/motion_photo_wasm.wasm
+bytes: 75814
+sha256: 2af6dc7e9ad231bc744abd10c48bcf3a11ebc097a59ef03d227f7a2e6b9152bf
+built: 2026-09-17T17:46:13.221Z
+
+Rebuild with `make wasm`. The Pages workflow rebuilds from source and uses
+that fresh module, so this file is a convenience for local development.
