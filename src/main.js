@@ -733,7 +733,24 @@ function wireViewer() {
   });
 }
 
+/**
+ * Publishes the header's real height so the toolbar can stick exactly below it.
+ * The tagline wraps at narrow widths, which makes a hard-coded offset leave a
+ * strip where the grid shows through.
+ */
+function syncHeaderHeight() {
+  const header = document.querySelector('.topbar');
+  if (!header) return;
+  const apply = () =>
+    document.documentElement.style.setProperty('--topbar-h', `${Math.round(header.getBoundingClientRect().height)}px`);
+  apply();
+  if (typeof ResizeObserver === 'function') new ResizeObserver(apply).observe(header);
+  window.addEventListener('resize', apply);
+  window.addEventListener('orientationchange', apply);
+}
+
 function boot() {
+  syncHeaderHeight();
   wireFolderInput();
   wireDropzone();
   wireToolbar();

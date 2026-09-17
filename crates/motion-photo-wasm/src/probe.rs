@@ -26,6 +26,9 @@ use crate::mp4::{self, Moov};
 use crate::seft;
 use crate::xmp::{self, Xmp};
 
+/// A JPEG is never this small, so a claimed still length below it is a sign the
+/// metadata is wrong and is ignored rather than handed to a decoder.
+pub const MIN_STILL_BYTES: u64 = 128;
 /// Absolute ceiling for any single window the driver may be asked to read.
 pub const HARD_SCAN_LIMIT: u64 = 8 * 1024 * 1024;
 /// How much of the file head is enough for metadata in practice.
@@ -392,7 +395,25 @@ fn still_mime_for(container: &str) -> Option<&'static str> {
 }
 
 /// Stage 1: what is this file, and where is the motion payload?
+///
+/// Wraps [`probe_inner`] so the still slice can be completed on every exit
+/// path: a JPEG's picture ends where its video begins, whichever of the routes
+/// found the video. Without it the viewer hands the decoder the whole file -
+/// image plus megabytes of clip - and a browser that rejects a stream with a
+/// long tail reports a perfectly good picture as undecodable.
 pub fn probe(s: &Sparse, file_size: u64) -> Outcome {
+    let mut out = probe_inner(s, file_size);
+    if out.container == "jpeg" {
+        if let Some((off, _)) = out.video {
+            if off >= MIN_STILL_BYTES {
+                out.still_len = out.still_len.or(Some(off));
+            }
+        }
+    }
+    out
+}
+
+fn probe_inner(s: &Sparse, file_size: u64) -> Outcome {
     let mut out = Outcome {
         file_size,
         ..Default::default()
@@ -528,9 +549,10 @@ pub fn probe(s: &Sparse, file_size: u64) -> Outcome {
                         method = Some("xmp-microvideo-offset");
                     }
                 }
-                if let Some((off, _)) = candidate {
-                    out.still_len = still_len_from_xmp(&facts).or(Some(off));
-                }
+                // The directory states the primary item's exact length, which
+                // is more precise than "up to the video"; the wrapper below
+                // fills in the fallback when it is absent.
+                out.still_len = still_len_from_xmp(&facts);
             }
         }
         "heif" | "avif" => {

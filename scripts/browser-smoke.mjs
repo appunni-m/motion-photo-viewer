@@ -465,6 +465,52 @@ try {
     await page.waitForTimeout(200);
   }
 
+  // ---- the sticky chrome must not bleed -----------------------------------
+  //
+  // The filter bar sticks under the header while the grid scrolls beneath it.
+  // If either bar is translucent, or its spacing is a margin rather than
+  // padding, photographs show through the controls.
+  const chrome = await page.evaluate(() => {
+    const header = document.querySelector('.topbar');
+    const toolbar = document.getElementById('toolbar');
+    const style = getComputedStyle(toolbar);
+    return {
+      headerHeight: Math.round(header.getBoundingClientRect().height),
+      declared: getComputedStyle(document.documentElement).getPropertyValue('--topbar-h').trim(),
+      position: style.position,
+      top: style.top,
+      marginTop: style.marginTop,
+      marginBottom: style.marginBottom,
+      background: style.backgroundColor,
+      opaque: !/rgba\(.*,\s*0?\.\d+\)/.test(style.backgroundColor),
+    };
+  });
+  assert(chrome.position === 'sticky', `the filter bar is sticky on a wide window (${chrome.position})`);
+  assert(
+    chrome.declared === `${chrome.headerHeight}px`,
+    `the sticky offset is the measured header height (${chrome.declared} vs ${chrome.headerHeight}px)`,
+  );
+  assert(chrome.top === `${chrome.headerHeight}px`, `the bar sticks at that offset (${chrome.top})`);
+  assert(chrome.opaque, `the filter bar has an opaque background (${chrome.background})`);
+  assert(
+    chrome.marginTop === '0px' && chrome.marginBottom === '0px',
+    `the bar keeps its spacing inside itself (${chrome.marginTop} / ${chrome.marginBottom})`,
+  );
+
+  await page.evaluate(() => window.scrollTo(0, 900));
+  await page.waitForTimeout(250);
+  const stuck = await page.evaluate(() => {
+    const header = document.querySelector('.topbar').getBoundingClientRect();
+    const toolbar = document.getElementById('toolbar').getBoundingClientRect();
+    return { headerBottom: Math.round(header.bottom), toolbarTop: Math.round(toolbar.top) };
+  });
+  assert(
+    Math.abs(stuck.toolbarTop - stuck.headerBottom) <= 1,
+    `scrolled, the bar sits flush under the header (${stuck.toolbarTop} vs ${stuck.headerBottom})`,
+  );
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(150);
+
   // ---- open the viewer and play the embedded video ------------------------
   await page.locator('.tile.is-motion').first().click();
   await page.waitForSelector('#viewer[open]', { timeout: 10000 });

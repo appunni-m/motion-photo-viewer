@@ -38,7 +38,9 @@ export class PreviewService {
     if (preferThumb && still?.thumb?.len > 0) {
       return { blob: file.slice(still.thumb.off, still.thumb.off + still.thumb.len), isThumb: true };
     }
-    if (still?.length > 0) {
+    // A short still slice means the metadata was wrong; a real picture is
+    // always longer, and the whole file is the safer fallback.
+    if (still?.length >= 128) {
       return { blob: file.slice(0, Math.min(still.length, file.size)), isThumb: false };
     }
     // No usable metadata: hand over the whole file. The browser stops at the

@@ -41,7 +41,10 @@
 
 * { box-sizing: border-box; }
 
-html, body { height: 100%; }
+/* `height: 100%` here would cap the sticky containing block at one viewport,
+   and the header and filter bar would scroll away instead of sticking. */
+html { height: 100%; }
+body { min-height: 100%; }
 
 body {
   margin: 0;
@@ -90,8 +93,9 @@ button.primary:hover { filter: brightness(1.06); }
   position: sticky; top: 0; z-index: 10;
   display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;
   padding: 0.9rem clamp(1rem, 4vw, 2.2rem);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
-  backdrop-filter: blur(10px);
+  /* Opaque, not translucent: the grid scrolls underneath this bar, and a
+     see-through header lets photographs bleed through the controls. */
+  background: var(--bg);
   border-bottom: 1px solid var(--border-soft);
 }
 .brand { display: flex; gap: 0.8rem; align-items: center; }
@@ -145,13 +149,23 @@ main { padding: clamp(1rem, 3vw, 2rem) clamp(1rem, 4vw, 2.2rem) 4rem; }
 /* --------------------------------------------------------------- toolbar */
 
 .toolbar {
-  position: sticky; top: 68px; z-index: 9;
+  /* Stuck directly under the header, whose height is measured rather than
+     assumed - the tagline wraps on narrow windows. */
+  position: sticky; top: var(--topbar-h, 68px); z-index: 9;
   display: flex; flex-wrap: wrap; gap: 0.6rem; justify-content: space-between; align-items: center;
-  margin: 1.2rem 0 0.8rem; padding: 0.6rem 0;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(8px);
+  /* Spacing lives inside the bar. A margin would be a transparent gap, and the
+     grid would scroll through it instead of behind the bar. */
+  margin: 0;
+  margin-inline: calc(-1 * clamp(1rem, 4vw, 2.2rem));
+  padding: 0.7rem clamp(1rem, 4vw, 2.2rem);
+  background: var(--bg);
   border-bottom: 1px solid var(--border-soft);
+  box-shadow: 0 6px 16px -12px rgba(2, 8, 23, 0.9);
 }
+/* Spacing around the sticky bar belongs to its siblings: a margin on the bar
+   itself would be a transparent strip with the grid sliding through it. */
+.summary { margin-bottom: 1.2rem; }
+.toolbar + .grid, .toolbar + .empty { margin-top: 0.9rem; }
 .filters { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .chip { border-radius: 999px; padding: 0.32rem 0.8rem; font-size: 0.84rem; }
 .chip.is-on { background: var(--accent); border-color: transparent; color: var(--accent-ink); font-weight: 600; }
@@ -270,7 +284,15 @@ main { padding: clamp(1rem, 3vw, 2rem) clamp(1rem, 4vw, 2.2rem) 4rem; }
 @media (max-width: 900px) {
   .viewer-body { grid-template-columns: 1fr; }
   .inspector { border-left: none; border-top: 1px solid var(--border-soft); }
-  .toolbar { position: static; }
+  .toolbar {
+    position: static;
+    margin-inline: 0;
+    padding-inline: 0;
+    background: none;
+    border-bottom: none;
+    box-shadow: none;
+  }
+  .summary { margin-bottom: 1.2rem; }
   .search input { min-width: 10rem; }
   .stat.wide { grid-column: span 2; }
 }

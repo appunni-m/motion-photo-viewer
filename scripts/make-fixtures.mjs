@@ -158,7 +158,7 @@ manifest.files.push({ name: 'plain-still.jpg', kind: 'still', note: 'a plain sti
 //    puts the video of a HEIC or AVIF still in a top-level `mpvd` box. Neither
 //    is a HEIF item, so each shape gets its own fixture.
 {
-  const seft = samsungSeftJpeg({ video: trailer });
+  const seft = samsungSeftJpeg({ video: trailer, image: photo });
   put('motion-samsung-seft.jpg', seft.file);
   manifest.files.push({
     name: 'motion-samsung-seft.jpg',
@@ -168,7 +168,7 @@ manifest.files.push({ name: 'plain-still.jpg', kind: 'still', note: 'a plain sti
     note: 'SEFT trailer with the video inline, as a Galaxy device writes it',
   });
 
-  const mpv2 = samsungSeftJpeg({ video: faststart, useMpv2: true });
+  const mpv2 = samsungSeftJpeg({ video: faststart, useMpv2: true, image: photo });
   put('motion-samsung-mpv2.jpg', mpv2.file);
   manifest.files.push({
     name: 'motion-samsung-mpv2.jpg',

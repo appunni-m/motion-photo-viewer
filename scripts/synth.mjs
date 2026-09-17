@@ -379,8 +379,16 @@ function seftBlock(type, name, payload) {
 }
 
 /** Samsung JPEG: image, video, then a SEFT trailer naming the video. */
-export function samsungSeftJpeg({ payload = 900, useMpv2 = false, video: supplied } = {}) {
-  const shell = jpegShell(2048);
+export function samsungSeftJpeg({
+  payload = 900,
+  useMpv2 = false,
+  video: supplied,
+  // The default shell is a byte-level stub: its scan data is filler, which is
+  // fine for structural assertions but not something a browser will draw. Pass
+  // a real JPEG when the fixture is used in a browser.
+  image,
+} = {}) {
+  const shell = image ?? jpegShell(2048);
   // The video lives right after the image data, and the `MotionPhoto_Data`
   // block *is* that region: its header sits immediately before the video. In
   // the pointer variant the video is plain appended data and the block holds a
@@ -399,6 +407,7 @@ export function samsungSeftJpeg({ payload = 900, useMpv2 = false, video: supplie
     file,
     video: video.bytes,
     videoOffset: useMpv2 ? shell.length : payloadOffsets[1],
+    stillLength: useMpv2 ? shell.length : payloadOffsets[1],
     imageLen: shell.length,
   };
 }

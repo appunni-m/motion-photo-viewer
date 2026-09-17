@@ -510,6 +510,19 @@ async function main() {
               `codec string is not RFC 6381 shaped: ${codec}`,
             );
           }
+          if (result.container === 'jpeg') {
+            // The picture must be sliced off where the clip starts. Handing the
+            // decoder the whole file works only by luck, and browsers that
+            // reject a stream with a long tail report the picture as broken.
+            assert(
+              result.still?.length > 128,
+              `a JPEG still needs a usable length (${result.still?.length})`,
+            );
+            assert(
+              result.still.length <= result.motion.video.off,
+              `the still slice must stop at the video (${result.still.length} <= ${result.motion.video.off})`,
+            );
+          }
           const dir = mkdtempSync(join(tmpdir(), 'mpv-'));
           const path = join(dir, 'extracted.mp4');
           writeFileSync(path, out);
