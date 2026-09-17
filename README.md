@@ -157,6 +157,10 @@ committed copy is a convenience rather than a source of truth.
    which fails if any request leaves the origin.
 4. **deploy** — publishes to GitHub Pages.
 
+The first run tries to enable Pages on the repository for you. If the token
+cannot, set **Settings → Pages → Source** to **GitHub Actions** once and re-run
+the workflow; every run after that deploys on its own.
+
 ## Limits, honestly
 
 * **A video whose `moov` sits in the middle of a large file, with no trailer and

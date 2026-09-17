@@ -106,6 +106,13 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # `pages: write` is only needed so the configure step can turn Pages on for
+    # a repository that has never deployed one; the deployment itself stays in
+    # the protected `deploy` job below.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     steps:
       - name: Check out the app
         uses: actions/checkout@v7
@@ -117,7 +124,13 @@ jobs:
           cache: npm
 
       - name: Configure GitHub Pages
+        # Enabling Pages needs repository permission this token may not have.
+        # A failure here is not fatal: if it cannot enable Pages automatically,
+        # set Settings -> Pages -> Source to "GitHub Actions" once.
+        continue-on-error: true
         uses: actions/configure-pages@v6
+        with:
+          enablement: true
 
       - name: Use the freshly built module
         uses: actions/download-artifact@v8
