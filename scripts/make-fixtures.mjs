@@ -15,8 +15,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  concat, googleMotionXmp, heicWithMpvd, jpegShell, samsungHeicMpvdSeft, samsungHeicSefd,
-  samsungMotionJpeg, samsungSeftJpeg, xmpApp1,
+  concat, googleMotionXmp, heicGridOnly, heicWithMpvd, jpegShell, samsungHeicMpvdSeft,
+  samsungHeicSefd, samsungMotionJpeg, samsungSeftJpeg, withExifOrientation, xmpApp1,
 } from './synth.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -71,6 +71,16 @@ ffmpeg([
   join(OUT, 'video-trailer.mp4'),
 ]);
 
+// An HEVC clip, so the codec-string path is exercised with real HEVC media.
+// Chrome and Edge decode HEVC only with platform support, so this is also the
+// fixture that proves an unsupported codec is still *attempted*.
+ffmpeg([
+  '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=15:duration=1',
+  '-c:v', 'libx265', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+  '-tag:v', 'hvc1', '-movflags', '+faststart',
+  join(OUT, 'video-hevc.mp4'),
+]);
+
 // A QuickTime companion, for the Live Photo pairing path.
 ffmpeg([
   '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=15:duration=1',
@@ -82,6 +92,7 @@ const photo = readFileSync(join(OUT, 'photo.jpg'));
 const faststart = readFileSync(join(OUT, 'video-faststart.mp4'));
 const trailer = readFileSync(join(OUT, 'video-trailer.mp4'));
 const mov = readFileSync(join(OUT, 'live.mov'));
+const hevc = readFileSync(join(OUT, 'video-hevc.mp4'));
 
 const manifest = { generated: new Date().toISOString(), files: [] };
 
@@ -209,7 +220,68 @@ manifest.files.push({ name: 'plain-still.jpg', kind: 'still', note: 'a plain sti
   });
 }
 
-// 8. Something that is not media at all, to prove it is skipped, not parsed.
+// 8. Landscape pictures that must be *displayed* as portrait ones: the EXIF
+//    Orientation tag is the only thing that says so, and the grid tile and the
+//    viewer have to agree about it.
+//
+//    Solid white, so a tile's painted area is exactly the rectangle it drew and
+//    an orientation mistake cannot hide behind the test pattern's dark corners.
+//
+//    Two variants, because they take different paths through the viewer: one
+//    where the tile is drawn from the full still, and one where it is drawn from
+//    an IFD1 embedded preview that carries no orientation of its own.
+{
+  ffmpeg(['-f', 'lavfi', '-i', 'color=c=white:s=640x480', '-frames:v', '1', '-q:v', '2', join(OUT, 'solid.jpg')]);
+  ffmpeg(['-f', 'lavfi', '-i', 'color=c=white:s=96x72', '-frames:v', '1', '-q:v', '2', join(OUT, 'solid-thumb.jpg')]);
+  const solid = readFileSync(join(OUT, 'solid.jpg'));
+  const solidThumb = readFileSync(join(OUT, 'solid-thumb.jpg'));
+
+  put('rotated-portrait.jpg', withExifOrientation(solid, 6));
+  manifest.files.push({
+    name: 'rotated-portrait.jpg',
+    kind: 'still',
+    orientation: 6,
+    note: '640x480 that must display as 480x640, from the full still',
+  });
+
+  put('rotated-preview.jpg', withExifOrientation(solid, 6, solidThumb));
+  manifest.files.push({
+    name: 'rotated-preview.jpg',
+    kind: 'still',
+    orientation: 6,
+    hasPreview: true,
+    note: 'Orientation=6 with an unrotated IFD1 preview: the tile must rotate it',
+  });
+}
+
+// 9. HEVC in a HEIC: the codec string must be valid RFC 6381, and playback must
+//    be attempted rather than refused on the strength of canPlayType.
+{
+  const hevcHeic = heicWithMpvd({ video: hevc });
+  put('motion-hevc.heic', hevcHeic.file);
+  manifest.files.push({
+    name: 'motion-hevc.heic',
+    kind: 'motion',
+    family: 'google',
+    expectBytes: 'video-hevc.mp4',
+    expectCodecPrefix: 'hvc1.1.',
+    note: 'HEVC clip: valid codec string, and playback is always attempted',
+  });
+}
+
+// 10. A plain HEIC: a grid of HEVC image tiles and no motion at all. Its tiles
+//     are `hvc1` items with extents, which is exactly what a careless video-item
+//     test mistakes for a clip.
+{
+  put('plain.heic', heicGridOnly({}).file);
+  manifest.files.push({
+    name: 'plain.heic',
+    kind: 'still',
+    note: 'HEVC image tiles only: must never be classified as motion',
+  });
+}
+
+// 11. Something that is not media at all, to prove it is skipped, not parsed.
 put('notes.txt', new TextEncoder().encode('not a picture\n'));
 manifest.files.push({ name: 'notes.txt', kind: 'other' });
 

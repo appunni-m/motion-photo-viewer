@@ -402,7 +402,13 @@ fn hvcc_string(s: &Sparse, hvcc: &BoxHdr, fourcc: &[u8; 4]) -> Option<String> {
     let profile_space = (b[1] >> 6) & 0x3;
     let tier = (b[1] >> 5) & 0x1;
     let profile_idc = b[1] & 0x1f;
-    let compat = u32::from_be_bytes([b[2], b[3], b[4], b[5]]);
+    // ISO/IEC 14496-15 section E.3: the compatibility flags appear with their
+    // bits *reversed*, as hexadecimal. A Main-profile file stores 0x60000000
+    // and the codec string says `6`. Printing the set bit indices instead - the
+    // obvious misreading - produces a string like `hvc1.1.30.29...` that no
+    // browser recognises, which is exactly how a playable file gets reported as
+    // unsupported.
+    let compat = u32::from_be_bytes([b[2], b[3], b[4], b[5]]).reverse_bits();
     let level = b[12];
     let mut out = String::with_capacity(24);
     out.push_str(&crate::bits::fourcc_string(fourcc));
@@ -415,28 +421,41 @@ fn hvcc_string(s: &Sparse, hvcc: &BoxHdr, fourcc: &[u8; 4]) -> Option<String> {
     }
     push_u32(&mut out, profile_idc as u32);
     out.push('.');
-    // Compatibility flags are written most-significant-bit-first.
-    let mut first = true;
-    for i in (0..32).rev() {
-        if (compat >> i) & 1 == 1 {
-            if !first {
-                out.push('.');
-            }
-            push_u32(&mut out, i);
-            first = false;
-        }
-    }
-    if first {
-        out.push('0');
-    }
+    push_hex_u32(&mut out, compat);
     out.push('.');
     out.push(if tier == 1 { 'H' } else { 'L' });
     push_u32(&mut out, level as u32);
-    out.push('.');
-    for byte in &b[6..12] {
-        push_hex_byte(&mut out, *byte);
+    // Trailing zero constraint bytes are dropped, and an all-zero set is left
+    // out entirely, which is what every real writer does.
+    let mut used = 6;
+    while used > 0 && b[6 + used - 1] == 0 {
+        used -= 1;
+    }
+    if used > 0 {
+        out.push('.');
+        for byte in &b[6..6 + used] {
+            push_hex_byte(&mut out, *byte);
+        }
     }
     Some(out)
+}
+
+fn push_hex_u32(out: &mut String, v: u32) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    if v == 0 {
+        out.push('0');
+        return;
+    }
+    let mut started = false;
+    for shift in (0..8).rev() {
+        let nibble = ((v >> (shift * 4)) & 0xf) as usize;
+        if nibble != 0 {
+            started = true;
+        }
+        if started {
+            out.push(HEX[nibble] as char);
+        }
+    }
 }
 
 fn push_u32(out: &mut String, v: u32) {
@@ -813,7 +832,38 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn hex_codec_strings_match_rfc6381() {
+    fn hevc_codec_strings_match_rfc6381() {
+        // The hvcC record of a real Galaxy HEIC: Main profile, level 90,
+        // compatibility flags 0x60000000, constraint byte 0xB0.
+        let real = [
+            0x01, 0x01, 0x60, 0x00, 0x00, 0x00, 0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5a,
+        ];
+        assert_eq!(
+            hvcc_string_from(&real).as_deref(),
+            Some("hvc1.1.6.L90.B0"),
+            "a real Main-profile record must produce the string browsers accept"
+        );
+
+        // Level 4.0 (idc 120), the shape reported as unsupported by the old code.
+        let mut level120 = real;
+        level120[12] = 120;
+        assert_eq!(
+            hvcc_string_from(&level120).as_deref(),
+            Some("hvc1.1.6.L120.B0")
+        );
+
+        // Main 10, high tier, no constraint bytes.
+        let main10 = [0x01, 0x22, 0x40, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0x9b];
+        assert_eq!(hvcc_string_from(&main10).as_deref(), Some("hvc1.2.2.H155"));
+
+        // Profile space 1 is written as a leading letter.
+        let space_a = [0x01, 0x41, 0x60, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0x5a];
+        assert_eq!(hvcc_string_from(&space_a).as_deref(), Some("hvc1.A1.6.L90"));
+    }
+
+    #[test]
+    fn avc_codec_strings_match_rfc6381() {
+        // The avcC record of a real Galaxy S8 clip.
         assert_eq!(
             avcc_string_from(&[1, 0x64, 0x00, 0x28], b"avc1").as_deref(),
             Some("avc1.640028")
@@ -821,10 +871,22 @@ pub(crate) mod tests {
     }
 
     fn avcc_string_from(bytes: &[u8], fourcc: &[u8; 4]) -> Option<String> {
-        let boxed = boxed(b"avcC", bytes);
+        record_string(b"avcC", bytes, fourcc)
+    }
+
+    fn hvcc_string_from(bytes: &[u8]) -> Option<String> {
+        record_string(b"hvcC", bytes, b"hvc1")
+    }
+
+    fn record_string(typ: &[u8; 4], bytes: &[u8], fourcc: &[u8; 4]) -> Option<String> {
+        let boxed = boxed(typ, bytes);
         let mut s = Sparse::new();
         s.add(&boxed, 0);
         let hdr = read_box(&s, 0, boxed.len() as u64).unwrap();
-        avcc_string(&s, &hdr, fourcc)
+        if typ == b"hvcC" {
+            hvcc_string(&s, &hdr, fourcc)
+        } else {
+            avcc_string(&s, &hdr, fourcc)
+        }
     }
 }

@@ -28,51 +28,64 @@ export class PreviewService {
     this.#maxUrls = maxUrls;
   }
 
-  /** The still-image bytes of an entry, preferring the embedded EXIF preview. */
-  stillBlob(entry, { preferThumb = true } = {}) {
+  /**
+   * The still-image bytes of an entry, preferring the embedded EXIF preview.
+   * @returns {{blob: Blob, isThumb: boolean}|null}
+   */
+  stillSource(entry, { preferThumb = true } = {}) {
     const still = entry.result?.still;
     const file = entry.file;
     if (preferThumb && still?.thumb?.len > 0) {
-      return file.slice(still.thumb.off, still.thumb.off + still.thumb.len);
+      return { blob: file.slice(still.thumb.off, still.thumb.off + still.thumb.len), isThumb: true };
     }
-    if (still?.length > 0) return file.slice(0, Math.min(still.length, file.size));
+    if (still?.length > 0) {
+      return { blob: file.slice(0, Math.min(still.length, file.size)), isThumb: false };
+    }
     // No usable metadata: hand over the whole file. The browser stops at the
     // end of the image, and for HEIC the whole file *is* the image.
-    if (file.size <= 64 * 1024 * 1024) return file;
+    if (file.size <= 64 * 1024 * 1024) return { blob: file, isThumb: false };
     return null;
   }
 
+  stillBlob(entry, options) {
+    return this.stillSource(entry, options)?.blob ?? null;
+  }
+
   /**
-   * Decodes a downscaled thumbnail into `canvas`.
+   * Draws a thumbnail into `canvas`.
+   *
+   * The picture is decoded through an `<img>` rather than `createImageBitmap`,
+   * for one reason: EXIF orientation. Every engine applies it to an `<img>`,
+   * and that is also what the viewer uses, so a tile and the picture it opens
+   * can never disagree. `createImageBitmap` is not consistent about it - Chrome
+   * applies the rotation even when asked not to, other engines honour the
+   * option - which produces a sideways tile next to an upright picture, or a
+   * sideways embedded preview next to an upright one.
+   *
    * @returns {Promise<'ok'|'unsupported'|'skipped'>}
    */
   async thumbnail(entry, canvas, width) {
     if (entry.status === 'failed' || !entry.result) return 'skipped';
     if (entry.thumbState === 'unsupported') return 'unsupported';
-    const blob = this.stillBlob(entry);
-    if (!blob) return 'skipped';
-    const token = entry.id;
-    await this.#schedule(token);
-    if (entry.__thumbCancelled) return 'skipped';
+    const source = this.stillSource(entry);
+    if (!source) return 'skipped';
+
+    await this.#schedule(entry.id);
+    const url = URL.createObjectURL(source.blob);
     try {
-      let bitmap;
-      try {
-        bitmap = await createImageBitmap(blob, {
-          resizeWidth: width,
-          resizeQuality: THUMB_QUALITY,
-          imageOrientation: 'from-image',
-        });
-      } catch {
-        // Older engines reject the options bag or the orientation keyword.
-        bitmap = await createImageBitmap(blob, { resizeWidth: width });
-      }
-      drawContained(canvas, bitmap);
-      bitmap.close?.();
+      const image = new Image();
+      image.style.imageOrientation = 'from-image';
+      image.decoding = 'async';
+      image.src = url;
+      await image.decode();
+      drawContained(canvas, image, rotationFor(entry, source.isThumb));
       return 'ok';
     } catch {
+      // HEIC in Chrome, a corrupt slice, or a format the engine cannot draw.
       entry.thumbState = 'unsupported';
       return 'unsupported';
     } finally {
+      URL.revokeObjectURL(url);
       this.#release();
     }
   }
@@ -171,18 +184,64 @@ export class PreviewService {
   }
 }
 
-/** Draws a bitmap into a canvas, letterboxed, without upscaling past 2x. */
-function drawContained(canvas, bitmap) {
+/**
+ * The rotation to apply on top of what the engine already did.
+ *
+ * A full still carries the camera's Orientation tag, and every engine applies it
+ * to an `<img>`, so nothing more is needed. An embedded preview thumbnail
+ * usually carries *no* orientation tag of its own - it is a copy of the stored
+ * pixels - so the engine has nothing to apply and the tile would sit sideways
+ * next to an upright picture. That is the case this function exists for.
+ */
+function rotationFor(entry, isThumb) {
+  if (!isThumb) return 1;
+  const meta = entry.result?.meta ?? {};
+  const own = entry.result?.still?.thumb?.orientation ?? meta.thumbOrientation;
+  if (own && own !== 1) return 1; // the preview carries its own tag: the engine wins
+  return meta.orientation ?? 1;
+}
+
+/** Draws an image source into a canvas, letterboxed, centred, and oriented. */
+function drawContained(canvas, source, orientation = 1) {
   const ctx = canvas.getContext('2d', { alpha: false });
   const cw = canvas.width;
   const ch = canvas.height;
   ctx.fillStyle = '#0b1220';
   ctx.fillRect(0, 0, cw, ch);
-  const scale = Math.min(cw / bitmap.width, ch / bitmap.height);
-  const w = Math.max(1, Math.round(bitmap.width * scale));
-  const h = Math.max(1, Math.round(bitmap.height * scale));
-  const x = Math.round((cw - w) / 2);
-  const y = Math.round((ch - h) / 2);
+
+  const sw = source.naturalWidth || source.width;
+  const sh = source.naturalHeight || source.height;
+  if (!sw || !sh) return;
+
+  const swap = orientation >= 5 && orientation <= 8;
+  const dispW = swap ? sh : sw;
+  const dispH = swap ? sw : sh;
+  const scale = Math.min(cw / dispW, ch / dispH);
+  const w = Math.max(1, Math.round(dispW * scale));
+  const h = Math.max(1, Math.round(dispH * scale));
+
+  ctx.save();
+  // The box is centred on the canvas, so the transform origin is the canvas
+  // centre - not the centre plus half the box.
+  ctx.translate(Math.round(cw / 2), Math.round(ch / 2));
+  switch (orientation) {
+    case 2: ctx.scale(-1, 1); break;
+    case 3: ctx.rotate(Math.PI); break;
+    case 4: ctx.scale(1, -1); break;
+    case 5: ctx.rotate(Math.PI / 2); ctx.scale(1, -1); break;
+    case 6: ctx.rotate(Math.PI / 2); break;
+    case 7: ctx.rotate(-Math.PI / 2); ctx.scale(1, -1); break;
+    case 8: ctx.rotate(-Math.PI / 2); break;
+    default: break;
+  }
   ctx.imageSmoothingQuality = 'low';
-  ctx.drawImage(bitmap, x, y, w, h);
+  // After a quarter turn the drawn rectangle's own axes are swapped.
+  if (swap) ctx.drawImage(source, -h / 2, -w / 2, h, w);
+  else ctx.drawImage(source, -w / 2, -h / 2, w, h);
+  ctx.restore();
+  // Recorded so the layout can be asserted from a test without guessing at
+  // pixels: what was drawn, from what, and with which orientation applied.
+  canvas.dataset.drawn = `${w}x${h}`;
+  canvas.dataset.source = `${sw}x${sh}`;
+  canvas.dataset.orientation = String(orientation);
 }

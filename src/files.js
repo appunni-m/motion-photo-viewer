@@ -11,8 +11,6 @@ const STILL_EXT = new Set([
   'bmp', 'dng', 'cr2', 'cr3', 'nef', 'arw', 'orf', 'rw2', 'raf', 'srw', 'pef',
 ]);
 const VIDEO_EXT = new Set(['mp4', 'm4v', 'mov', '3gp', '3g2', 'mkv', 'webm', 'avi', 'hevc', '265']);
-/** Suffixes some tools add to the video companion of a motion photo. */
-const COMPANION_SUFFIX = /([-_.~](b|video|mp|motion|mov))$/i;
 
 export function extensionOf(name) {
   const at = name.lastIndexOf('.');
@@ -25,14 +23,18 @@ export function isScannable(file) {
 }
 
 /**
- * The key used to pair a still with a video companion (Apple Live Photos,
- * Google Photos takeout, Samsung exports).
+ * The key used to pair a still with a video companion.
+ *
+ * Exactly the file name without its extension. That is how every real
+ * convention stores a pair - `IMG_1234.HEIC` with `IMG_1234.MOV` from Apple,
+ * `PXL_….jpg` with `PXL_….mp4` from Google Takeout - and anything looser starts
+ * pairing unrelated files. Stripping suffixes like `-video` or `-b` looks
+ * helpful but is not a convention any camera writes, and it turns an ordinary
+ * picture into a Live Photo as soon as a same-named clip exists.
  */
 export function pairKey(name) {
   const at = name.lastIndexOf('.');
-  let stem = at <= 0 ? name : name.slice(0, at);
-  stem = stem.replace(COMPANION_SUFFIX, '');
-  return stem.toLowerCase();
+  return (at <= 0 ? name : name.slice(0, at)).toLowerCase();
 }
 
 /**

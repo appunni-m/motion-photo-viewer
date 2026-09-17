@@ -490,27 +490,59 @@ async function main() {
     process.stdout.write('\nreal media (ffmpeg fixtures)\n');
     const manifest = JSON.parse(readFileSync(join(realDir, 'manifest.json'), 'utf8'));
     for (const item of manifest.files) {
-      if (item.kind !== 'motion') continue;
-      await checkAsync(`${item.name}: extracted video is a valid MP4`, async () => {
-        const bytes = new Uint8Array(readFileSync(join(realDir, item.name)));
-        const { result, out } = await extract(core, bytes);
-        assertEqual(result.motion.playable, true, `playable (${JSON.stringify(result.motion)})`);
-        const dir = mkdtempSync(join(tmpdir(), 'mpv-'));
-        const path = join(dir, 'extracted.mp4');
-        writeFileSync(path, out);
-        if (hasFfprobe()) {
-          const probe = runFfprobe(path);
-          const video = (probe.streams ?? []).find((s) => s.codec_type === 'video');
-          assert(video, 'ffprobe found no video stream in the extracted file');
-        } else {
-          writeFileSync(join(dir, 'unused'), '');
-        }
-        if (item.expectBytes) {
-          const original = new Uint8Array(readFileSync(join(realDir, item.expectBytes)));
-          assertEqual([...out], [...original], 'extraction must be byte-exact');
-        }
-        return 'ok';
-      });
+      const bytesOf = () => new Uint8Array(readFileSync(join(realDir, item.name)));
+
+      if (item.kind === 'motion') {
+        await checkAsync(`${item.name}: extracted video is a valid MP4`, async () => {
+          const bytes = bytesOf();
+          const { result, out } = await extract(core, bytes);
+          assertEqual(result.motion.playable, true, `playable (${JSON.stringify(result.motion)})`);
+          if (item.expectCodecPrefix) {
+            const codec = String(result.motion.codec ?? '');
+            assert(
+              codec.startsWith(item.expectCodecPrefix),
+              `codec ${codec} should start with ${item.expectCodecPrefix}`,
+            );
+            // The shape browsers actually parse: hvc1.<space><profile>.<compat>.<tier><level>[.<constraints>]
+            assert(
+              /^hvc1\.[A-C]?\d+\.[0-9a-f]+\.[HL]\d+([.][0-9A-Fa-f]{2,12})?$/.test(codec) ||
+                /^avc1\.[0-9A-Fa-f]{6}$/.test(codec),
+              `codec string is not RFC 6381 shaped: ${codec}`,
+            );
+          }
+          const dir = mkdtempSync(join(tmpdir(), 'mpv-'));
+          const path = join(dir, 'extracted.mp4');
+          writeFileSync(path, out);
+          if (hasFfprobe()) {
+            const probe = runFfprobe(path);
+            const video = (probe.streams ?? []).find((s) => s.codec_type === 'video');
+            assert(video, 'ffprobe found no video stream in the extracted file');
+          }
+          if (item.expectBytes) {
+            const original = new Uint8Array(readFileSync(join(realDir, item.expectBytes)));
+            assertEqual([...out], [...original], 'extraction must be byte-exact');
+          }
+          return 'ok';
+        });
+      }
+
+      if (item.kind === 'still') {
+        await checkAsync(`${item.name}: a plain picture is never motion`, async () => {
+          const bytes = bytesOf();
+          const { result } = await extract(core, bytes);
+          assert(result.plan === null, `no plan may be produced for a still (${JSON.stringify(result.motion)})`);
+          assertEqual(result.motion?.playable ?? false, false, 'not playable');
+          assertEqual(result.motion?.found ?? false, false, 'no motion may be reported');
+        });
+      }
+
+      if (item.orientation) {
+        await checkAsync(`${item.name}: EXIF orientation is read`, async () => {
+          const bytes = bytesOf();
+          const { result } = await extract(core, bytes);
+          assertEqual(result.meta.orientation, item.orientation, 'orientation tag');
+        });
+      }
     }
   } else {
     skipped.push('real media fixtures (run `npm run fixtures`)');
@@ -565,6 +597,19 @@ async function main() {
     for (const ref of shell[1].matchAll(/'([^']+)'/g)) {
       assert(!/^(blob:|https?:)/.test(ref[1]), `shell entry must be local: ${ref[1]}`);
     }
+  });
+
+  check('the app never refuses playback on the strength of canPlayType', () => {
+    const main = readFileSync(join(ROOT, 'src', 'main.js'), 'utf8');
+    assert(!/if \(support === '' [^)]*\)\s*\{\s*showPlaceholder/.test(main), 'playback must not be gated');
+    assert(/reportPlaybackFailure/.test(main), 'a real decode failure must be explained');
+    assert(/addEventListener\('error'/.test(main), 'the video error event must be handled');
+  });
+
+  check('tiles and the viewer share one EXIF-orientation path', () => {
+    const preview = readFileSync(join(ROOT, 'src', 'preview.js'), 'utf8');
+    assert(!/createImageBitmap\(/.test(preview), 'orientation handling must not depend on createImageBitmap');
+    assert(/new Image\(\)/.test(preview), 'tiles must decode through an <img>');
   });
 
   check('the worker never reads a whole file implicitly', () => {

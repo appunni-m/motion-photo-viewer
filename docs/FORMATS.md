@@ -112,14 +112,24 @@ trailing `sefd` box is trimmed when the payload's own box chain can be walked.
 
 Some ISOBMFF files describe the video as an *item*: `iinf`/`infe` for the item
 table, `iloc` for its extents, `pitm` for the primary image, and `iref` for the
-`cdsc` reference that ties them together (`src/heif.rs`). The video item is
-chosen by rank — `cdsc`-referenced and video-typed first, then `cdsc`-referenced,
-then the largest video-typed item — and the primary item is never eligible.
+`cdsc` reference that ties them together (`src/heif.rs`).
 
-This is the reading of the specification that predates the `mpvd` box, and every
-real Samsung file checked uses `cdsc` for its Exif and XMP items instead. It is
-implemented because it is cheap, harmless, and the shape the spec describes for
-a general ISOBMFF motion photo; it is not what current camera firmware writes.
+The trap here is worth stating plainly, because it makes **every ordinary HEIC
+look like a motion photo**: `hvc1`, `hev1`, `av01`, `vp08` and `vp09` are the
+*image* codecs of HEIC and AVIF, so the tiles of a normal phone photo carry
+exactly the item types a naive "is this a video codec" test accepts. The rule
+used here is therefore:
+
+* a `mime` item whose `content_type` starts with `video/`, or
+* a codec that can never be a HEIF still image (`avc1`, `avc3`, `mp4v`, `encv`),
+* **and** the item is not one the primary `grid` references with `dimg`, which
+  by definition makes it a picture,
+* **and** it is not the primary item itself.
+
+The `cdsc` reference and the item size only decide between candidates that are
+already videos; they never promote an image. A plain HEIC — grid, tiles, Exif,
+XMP, nothing else — therefore reports `motion: null`, which is asserted in both
+the Rust unit tests and the end-to-end suite.
 
 ### 5. XMP (JPEG, and ISOBMFF as a fallback)
 
@@ -214,12 +224,27 @@ ranges of the **original** file.
 }
 ```
 
+A scan is two stages. Stage 1 sees the head and the tail, so it knows the
+container, the metadata and which route found the video; stage 2 reads a window
+at that range, so it knows the plan. `mergeStages()` in `src/wasm.js` joins them,
+and takes care that stage 2's generic labels never overwrite the specific route
+stage 1 identified.
+
 `readMore` is the only way the core asks for more bytes. `target: "head"` and
 `"tail"` grow that window and re-probe; `target: "window"` is a request to read
 at `off` and call `mp_prepare` with `region` — that is how a video range found in
 the metadata is turned into a plan when its header is outside both windows. The
 driver stops as soon as a target would not grow (which is what makes the loop
 provably terminating) or the budget runs out.
+
+Codec strings are built to RFC 6381 because browsers parse them: for HEVC the
+compatibility flags appear with their bits **reversed** (a Main-profile file
+stores `0x60000000` and the string says `6`), trailing zero constraint bytes are
+dropped, and the profile space becomes a leading letter. Printing the set bit
+indices instead - the obvious misreading, and the bug this code shipped first -
+yields `hvc1.1.30.29.L120.000000000000`, which no browser recognises, so a
+perfectly playable clip is reported as unsupported before it is even attempted.
+AVC needs no such care: `avc1.` plus profile, compatibility and level as hex.
 
 `family` is a label, not a promise: `samsung` when `MotionPhoto_Data` appears in
 the bytes or a trailer was found, `google` for the Motion Photo 1.0 properties,
@@ -251,7 +276,17 @@ deterministic checks, a headless browser run, and three genuine camera files):
   3,005,799 B; and 2,341,602 B. All three take the SEFT route, need no rebuild,
   and their extractions are byte-identical slices that ffprobe reads back with
   the same codec, width and height as the original range. Between 4% and 12% of
-  each file is read.
+  each file is read. A Galaxy M34 5G file (7,061,733 B, 4,270,333 B of video at
+  offset 2,791,277, HEVC Main level 4.0 with AAC) checks out the same way, with
+  `--local` on the same script.
+* **Classification.** A plain HEIC with HEVC image tiles is never reported as a
+  motion photo; ordinary stills carry no play affordance, not even on hover; a
+  still and a clip that merely share a name prefix are not paired, because only
+  an exact stem pairs.
+* **Orientation.** A landscape picture tagged `Orientation=6` is drawn portrait
+  both from the full still and from an embedded IFD1 preview that has no tag of
+  its own, and the viewer agrees with the tile. The exact drawn geometry is
+  recorded by the renderer and asserted, rather than inferred from pixels.
 * **Byte-exact extraction** for the SEFT JPEG (inline video and `mpv2` record),
   the `mpvd` HEIC, the two Samsung HEIC layouts, the item-based HEIC, the Google
   Motion Photo 1.0 JPEG, and the older `MicroVideoOffset` shape — each compared

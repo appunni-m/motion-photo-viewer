@@ -50,6 +50,7 @@ store:
 | Some Samsung/Xiaomi exports with no metadata at all | the sample table of a trailer `moov`, with chunk offsets patched | rebuilt MP4, samples byte-identical |
 | **iPhone / Google Live Photo pairs** | two files with the same base name, one still + one video | paired in the UI, video streamed from the companion |
 | Plain JPEG / PNG / WebP / GIF / TIFF / MP4 | container sniffing | listed as a still or a video, never mis-reported as motion |
+| A plain HEIC or AVIF | nothing: its `hvc1`/`av01` items are *images*, and images are never promoted to video | a still, with no play affordance |
 
 Whether the *still* is decodable is the browser's business: Safari draws HEIC,
 Chrome and Firefox show a labelled placeholder and offer the embedded video
@@ -111,6 +112,18 @@ the same codec, width and height as the original range. Reproduce it with:
 ```sh
 make check-real     # downloads the samples into a temp dir, ~17 MB
 ```
+
+Your own files work too. `--local` checks one, and with `--expect` it asserts the
+video's exact byte range (ExifTool reports the length; `exiftool -b
+-EmbeddedVideoFile file.jpg > v.mp4` plus a byte search gives the offset):
+
+```sh
+node scripts/check-real-samples.mjs --local IMG_0001.jpg --expect 3366251:4647675
+```
+
+A Galaxy M34 5G capture (7,061,733 B; 4,270,333 B of HEVC video at offset
+2,791,277) verifies exactly this way: `seft-trailer`, `hvc1.1.6.L120`, byte-exact
+extraction, ffprobe agreeing on `hevc 1088x1088`.
 
 That check needs the network, so it is deliberately not part of `make verify`.
 

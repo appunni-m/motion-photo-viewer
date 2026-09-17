@@ -7,7 +7,6 @@
 //! no-copy extractor wants.
 
 use crate::bits::{boxes, child, BoxHdr, Sparse};
-use crate::mp4::is_video_sample_entry;
 
 #[derive(Clone, Debug, Default)]
 pub struct Item {
@@ -34,10 +33,20 @@ impl Item {
         self.extents.first().map(|e| e.0)
     }
 
+    /// True when the item's own metadata says "video", and only then.
+    ///
+    /// The subtlety that matters: `hvc1`, `hev1`, `av01`, `vp08` and `vp09` are
+    /// the *image* codecs of HEIC and AVIF, so the tiles of an ordinary phone
+    /// photo carry exactly the item types a naive test would call video. That
+    /// mistaken test makes every plain HEIC look like a motion photo. The
+    /// unambiguous signals are a `mime` item whose content type is a video, or a
+    /// codec that cannot be a HEIF still image.
     pub fn is_video(&self) -> bool {
-        is_video_sample_entry(&self.item_type)
-            || self.content_type.starts_with("video/")
-            || self.item_type == *b"mime" && self.content_type.starts_with("video/")
+        if self.item_type == *b"mime" {
+            return self.content_type.starts_with("video/");
+        }
+        self.content_type.starts_with("video/")
+            || matches!(&self.item_type, b"avc1" | b"avc3" | b"mp4v" | b"encv")
     }
 
     /// True when the extents are laid out back to back, so the item can be
@@ -92,30 +101,31 @@ impl Meta {
     }
 
     /// The most likely motion-photo video item, if any.
+    ///
+    /// An item has to *be* a video to qualify; the `cdsc` reference and the item
+    /// size only decide between candidates. Grid tiles are excluded outright:
+    /// the primary grid references them with `dimg`, which by definition makes
+    /// them pictures.
     pub fn video_item(&self) -> Option<&Item> {
         let described = self.described_by_primary();
-        // Prefer a cdsc-referenced item that also looks like video, then any
-        // described item, then the largest video-typed item.
+        let tiles: Vec<u32> = self
+            .refs
+            .iter()
+            .filter(|r| &r.ref_type == b"dimg")
+            .map(|r| r.to)
+            .collect();
         let mut best: Option<&Item> = None;
+        let mut best_rank: (u8, u64) = (0, 0);
         for item in &self.items {
-            if Some(item.id) == self.primary {
+            if Some(item.id) == self.primary || tiles.contains(&item.id) {
                 continue;
             }
-            if !item.is_video() && !described.contains(&item.id) {
+            if !item.is_video() || item.extents.is_empty() || item.in_idat {
                 continue;
             }
-            if item.extents.is_empty() || item.in_idat {
-                continue;
-            }
-            let better = match best {
-                None => true,
-                Some(b) => {
-                    let rank =
-                        |i: &Item| (described.contains(&i.id) as u8) * 2 + (i.is_video() as u8);
-                    (rank(item), item.total_len()) > (rank(b), b.total_len())
-                }
-            };
-            if better {
+            let rank = ((described.contains(&item.id) as u8) * 2, item.total_len());
+            if best.is_none() || rank > best_rank {
+                best_rank = rank;
                 best = Some(item);
             }
         }
@@ -465,12 +475,20 @@ pub(crate) mod tests {
     }
 
     fn infe_v2(id: u16, typ: &[u8; 4], name: &str) -> Vec<u8> {
+        infe_v2_typed(id, typ, name, None)
+    }
+
+    fn infe_v2_typed(id: u16, typ: &[u8; 4], name: &str, content_type: Option<&str>) -> Vec<u8> {
         let mut body = vec![2, 0, 0, 0];
         body.extend_from_slice(&id.to_be_bytes());
         body.extend_from_slice(&0u16.to_be_bytes());
         body.extend_from_slice(typ);
         body.extend_from_slice(name.as_bytes());
         body.push(0);
+        if let Some(ct) = content_type {
+            body.extend_from_slice(ct.as_bytes());
+            body.push(0);
+        }
         boxed(b"infe", &body)
     }
 
@@ -480,7 +498,9 @@ pub(crate) mod tests {
         let mut iinf_body = vec![0u8, 0, 0, 0];
         iinf_body.extend_from_slice(&2u16.to_be_bytes());
         iinf_body.extend_from_slice(&infe_v2(1, b"hvc1", "Primary"));
-        iinf_body.extend_from_slice(&infe_v2(2, b"hvc1", "MotionPhoto"));
+        // A video item is marked the way the specification marks one: a `mime`
+        // item whose content type is a video. `hvc1` alone would be an image.
+        iinf_body.extend_from_slice(&infe_v2_typed(2, b"mime", "MotionPhoto", Some("video/mp4")));
         let iinf = boxed(b"iinf", &iinf_body);
 
         let mut pitm_body = vec![0u8, 0, 0, 0];
@@ -554,11 +574,79 @@ pub(crate) mod tests {
         let v = parsed.video_item().expect("video item");
         assert_eq!(v.id, 2);
         assert_eq!(v.name, "MotionPhoto");
-        assert_eq!(v.type_str(), "hvc1");
+        assert_eq!(v.type_str(), "mime");
+        assert_eq!(v.content_type, "video/mp4");
         assert_eq!(v.start(), Some(2048));
         assert_eq!(v.total_len(), 4096);
         assert!(v.contiguous());
         assert!(v.is_video());
+    }
+
+    /// The tiles of an ordinary HEIC are `hvc1` items with extents - exactly
+    /// what a naive "is it a video codec" test would accept. Only the ones the
+    /// primary grid references with `dimg` may be excluded.
+    #[test]
+    fn a_plain_heic_yields_no_video_item() {
+        let data = synth_plain_heic();
+        let mut s = Sparse::new();
+        s.add(&data, 0);
+        let meta = parse_meta(&s, &find_meta(&s, data.len() as u64).unwrap()).unwrap();
+        assert!(meta.items.len() >= 4, "tiles and metadata items are parsed");
+        assert!(
+            meta.items
+                .iter()
+                .any(|i| i.item_type == *b"hvc1" && !i.extents.is_empty()),
+            "the fixture really does contain HEVC image tiles"
+        );
+        assert!(
+            meta.video_item().is_none(),
+            "an image tile must never be a video item"
+        );
+    }
+
+    /// ftyp | meta(pitm=grid, tiles=2, Exif) | mdat[tiles, exif], with the grid
+    /// referencing its tiles through `dimg`.
+    fn synth_plain_heic() -> Vec<u8> {
+        let tile = vec![0x5au8; 256];
+        let mut iinf_body = vec![0u8, 0, 0, 0];
+        iinf_body.extend_from_slice(&4u16.to_be_bytes());
+        iinf_body.extend_from_slice(&infe_v2(1, b"grid", ""));
+        iinf_body.extend_from_slice(&infe_v2(2, b"hvc1", ""));
+        iinf_body.extend_from_slice(&infe_v2(3, b"hvc1", ""));
+        iinf_body.extend_from_slice(&infe_v2(4, b"Exif", ""));
+
+        let mut pitm_body = vec![0u8, 0, 0, 0];
+        pitm_body.extend_from_slice(&1u16.to_be_bytes());
+
+        let mut iloc_body = vec![0u8, 0, 0, 0, 0x44, 0x00];
+        iloc_body.extend_from_slice(&4u16.to_be_bytes());
+        for (id, off, len) in [(1u16, 0u32, 8u32), (2, 0, 256), (3, 256, 256), (4, 512, 16)] {
+            iloc_body.extend_from_slice(&id.to_be_bytes());
+            iloc_body.extend_from_slice(&0u16.to_be_bytes());
+            iloc_body.extend_from_slice(&1u16.to_be_bytes());
+            iloc_body.extend_from_slice(&off.to_be_bytes());
+            iloc_body.extend_from_slice(&len.to_be_bytes());
+        }
+
+        let mut dimg_body = vec![0u8, 0, 0, 0];
+        dimg_body.extend_from_slice(&1u16.to_be_bytes());
+        dimg_body.extend_from_slice(&2u16.to_be_bytes());
+        dimg_body.extend_from_slice(&2u16.to_be_bytes());
+        dimg_body.extend_from_slice(&3u16.to_be_bytes());
+
+        let mut meta_body = vec![0u8, 0, 0, 0];
+        meta_body.extend_from_slice(&boxed(b"pitm", &pitm_body));
+        meta_body.extend_from_slice(&boxed(b"iinf", &iinf_body));
+        meta_body.extend_from_slice(&boxed(b"iloc", &iloc_body));
+        meta_body.extend_from_slice(&boxed(b"iref", &boxed(b"dimg", &dimg_body)));
+
+        let mut out = crate::mp4::build_ftyp(b"heic", &[*b"heic", *b"mif1"]);
+        out.extend_from_slice(&boxed(b"meta", &meta_body));
+        out.extend_from_slice(&boxed(
+            b"mdat",
+            &[tile.as_slice(), tile.as_slice(), &[0x22u8; 16]].concat(),
+        ));
+        out
     }
 
     #[test]

@@ -10,7 +10,13 @@
  * It needs the network, so it is deliberately *not* part of `make verify`. Run
  * it when changing detection code, or when adding support for a new device.
  *
- *   node scripts/check-real-samples.mjs [--dir /path/to/samples]
+ *   node scripts/check-real-samples.mjs [--dir /path/to/samples] [--local photo.jpg]
+ *
+ * `--local` checks one file of your own instead of the corpus. Add
+ * `--expect <offset>:<length>` when you know the video's byte range - ExifTool
+ * reports the length, and the offset can be recovered with
+ * `exiftool -b -EmbeddedVideoFile file.jpg > v.mp4` plus a search for those
+ * bytes - and the range is asserted exactly.
  *
  * The samples are large (17 MB in total) and stay in a temporary directory;
  * nothing is added to the repository.
@@ -136,11 +142,54 @@ function ffprobeStreams(path) {
   }
 }
 
+const localArg = args.indexOf('--local');
+const expectArg = args.indexOf('--expect');
 const dir = dirArg >= 0 ? resolve(args[dirArg + 1]) : mkdtempSync(join(tmpdir(), 'mpv-real-'));
-process.stdout.write(`motion-photo-viewer real-camera check (samples in ${dir})\n`);
 
-const { instance } = await WebAssembly.instantiate(readFileSync(join(ROOT, 'wasm', 'motion_photo_wasm.wasm')), {});
+const { instance } = await WebAssembly.instantiate(
+  readFileSync(join(ROOT, 'wasm', 'motion_photo_wasm.wasm')),
+  {},
+);
 const core = new MotionPhotoCore(instance.exports);
+
+/** A file of the user's own, checked without the corpus expectations. */
+if (localArg >= 0 && args[localArg + 1]) {
+  const path = resolve(args[localArg + 1]);
+  const bytes = new Uint8Array(readFileSync(path));
+  process.stdout.write(`motion-photo-viewer real-camera check (local file)\n\n${path} (${bytes.length} bytes)\n`);
+  const { result, stats, file } = await scan(core, bytes);
+  const motion = result.motion ?? {};
+  const expect = expectArg >= 0 && args[expectArg + 1] ? args[expectArg + 1].split(':').map(Number) : null;
+  assertEqual(result.container, result.container, 'container');
+  ok(`container ${result.container}, kind ${result.kind}`);
+  ok(`route ${motion.method} (${motion.family}, ${motion.confidence})`);
+  ok(`video ${JSON.stringify(motion.video)} of ${bytes.length} bytes`);
+  if (motion.codec) ok(`codec ${motion.codec}`);
+  ok(`camera ${[result.meta?.make, result.meta?.model].filter(Boolean).join(' ') || 'unknown'}`);
+  ok(`read ${stats.bytesRead} bytes (${((stats.bytesRead / bytes.length) * 100).toFixed(1)}%) in ${stats.reads} reads`);
+  if (motion.timestampUs) ok(`marker frame at ${(motion.timestampUs / 1e6).toFixed(3)}s`);
+  if (expect) {
+    assertEqual(motion.video?.off, expect[0], 'video offset');
+    assertEqual(motion.video?.len, expect[1], 'video length');
+  }
+  if (result.plan) {
+    const extracted = new Uint8Array(await planToBlob(file, result.plan).arrayBuffer());
+    assertEqual(String.fromCharCode(...extracted.subarray(4, 8)), 'ftyp', 'extracted bytes start with ftyp');
+    const out = join(dir, `${path.split('/').pop()}.extracted.mp4`);
+    writeFileSync(out, extracted);
+    const streams = ffprobeStreams(out);
+    const video = streams?.find((s) => s.codec_type === 'video');
+    if (video) ok(`ffprobe reads the extraction: ${video.codec_name} ${video.width}x${video.height}`);
+    else if (streams === null) process.stdout.write('  ..    ffprobe not installed; skipped stream validation\n');
+    else bad('ffprobe found no video stream in the extracted file');
+    process.stdout.write(`  ..    extracted to ${out}\n`);
+  } else {
+    bad('no plan was produced');
+  }
+  process.stdout.write(problems.length ? `\n${problems.length} check(s) failed\n` : '\nall real-camera checks passed\n');
+  process.exit(problems.length ? 1 : 0);
+}
+process.stdout.write(`motion-photo-viewer real-camera check (samples in ${dir})\n`);
 
 for (const sample of SAMPLES) {
   let path;

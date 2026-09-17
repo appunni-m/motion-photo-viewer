@@ -258,9 +258,20 @@ export function heicWithItem(buildItem, { padTo = 0, primarySize = 3000 } = {}) 
   const primary = new Uint8Array(primarySize).fill(0x11);
   const ftypBox = ftyp('heic', ['heic', 'mif1']);
 
-  const infe = (id, type, name) =>
-    box('infe', u32(2 << 24), u16(id), u16(0), fourcc(type), new TextEncoder().encode(`${name}\0`));
-  const iinf = box('iinf', u32(0), u16(2), infe(1, 'hvc1', 'Primary'), infe(2, 'hvc1', 'MotionPhoto'));
+  const infe = (id, type, name, contentType) => {
+    const parts = [u32(2 << 24), u16(id), u16(0), fourcc(type), new TextEncoder().encode(`${name}\0`)];
+    // A video item is a `mime` item with a video content type; `hvc1` would be
+    // an HEVC *image*, which is what a plain HEIC is full of.
+    if (contentType) parts.push(new TextEncoder().encode(`${contentType}\0`));
+    return box('infe', ...parts);
+  };
+  const iinf = box(
+    'iinf',
+    u32(0),
+    u16(2),
+    infe(1, 'hvc1', 'Primary'),
+    infe(2, 'mime', 'MotionPhoto', 'video/mp4'),
+  );
   const pitm = box('pitm', u32(0), u16(1));
   const iref = box('iref', u32(0), box('cdsc', u16(1), u16(1), u16(2)));
   const ispe = box('iprp', box('ipco', box('ispe', u32(0), u32(4032), u32(3024))));
@@ -485,4 +496,116 @@ export function samsungHeicSefd({ payload = 700, video } = {}) {
     const videoOffset = offset + 8 + 8 + 'MotionPhoto_Data'.length;
     return { file: box('sefd', concat([bytes, seft])), bytes, offset: videoOffset };
   });
+}
+
+// ------------------------------------------------------------------ EXIF
+//
+// A minimal APP1 EXIF segment carrying one tag: Orientation. Enough to build a
+// rotated fixture without an EXIF library, and enough for the viewer to have to
+// honour it.
+
+export function exifApp1(orientation, thumbnail) {
+  const thumb = thumbnail ?? new Uint8Array(0);
+  // IFD0: Orientation. IFD1: the embedded preview. Offsets are relative to the
+  // TIFF header, and the layout is fixed so they can be computed up front.
+  const ifd0At = 8;
+  const ifd0Len = 2 + 12 + 4;
+  const ifd1At = ifd0At + ifd0Len;
+  const ifd1Len = 2 + 2 * 12 + 4;
+  const thumbAt = thumb.length ? ifd1At + ifd1Len : 0;
+
+  const ifd0 = concat([
+    u16(1),
+    u16(0x0112), u16(3), u32(1), u16(orientation), new Uint8Array(2),
+    u32(thumb.length ? ifd1At : 0),
+  ]);
+  const ifd1 = thumb.length
+    ? concat([
+        u16(2),
+        u16(0x0201), u16(4), u32(1), u32(thumbAt),
+        u16(0x0202), u16(4), u32(1), u32(thumb.length),
+        u32(0),
+      ])
+    : new Uint8Array(0);
+
+  const tiff = concat([
+    new TextEncoder().encode('MM'), // big endian
+    u16(42),
+    u32(ifd0At),
+    ifd0,
+    ifd1,
+    thumb,
+  ]);
+  const body = concat([new TextEncoder().encode('Exif\0\0'), tiff]);
+  return concat([new Uint8Array([0xff, 0xe1]), u16(body.length + 2), body]);
+}
+
+/**
+ * Splices an EXIF block into a JPEG, right after SOI.
+ * Pass `thumbnail` to also add an IFD1 embedded preview, which is what a camera
+ * writes and what a tile is usually drawn from.
+ */
+export function withExifOrientation(jpeg, orientation, thumbnail) {
+  return concat([jpeg.subarray(0, 2), exifApp1(orientation, thumbnail), jpeg.subarray(2)]);
+}
+
+/**
+ * A plain HEIC: a grid of HEVC image tiles and nothing else. This is what a
+ * normal Samsung or Apple photo looks like, and it must classify as a still -
+ * `hvc1` items in a HEIC are *images*, not video.
+ */
+export function heicGridOnly({ tileSize = 900, tiles = 3 } = {}) {
+  const enc = (text) => new TextEncoder().encode(`${text}\0`);
+  const infe = (id, type, name, contentType) => {
+    const parts = [u32(2 << 24), u16(id), u16(0), fourcc(type), enc(name)];
+    if (contentType) parts.push(enc(contentType));
+    return box('infe', ...parts);
+  };
+  const tileBytes = new Uint8Array(tileSize).fill(0x5a);
+  const itemCount = tiles + 3; // grid + tiles + Exif + XMP
+  const exifId = 2 + tiles;
+  const xmpId = 3 + tiles;
+
+  const iinf = box(
+    'iinf',
+    u32(0),
+    u16(itemCount),
+    infe(1, 'grid', ''),
+    ...Array.from({ length: tiles }, (_, i) => infe(2 + i, 'hvc1', '')),
+    infe(exifId, 'Exif', ''),
+    infe(xmpId, 'mime', '', 'application/rdf+xml'),
+  );
+  const pitm = box('pitm', u32(0), u16(1));
+  // The Exif item gets an extent too, which is what a real file looks like.
+  const ispe = box('iprp', box('ipco', box('ispe', u32(0), u32(4032), u32(3024))));
+
+  /** iloc version 0: two size bytes, then (id, data_ref, count, offset, length). */
+  const buildMeta = (tileOffset, gridOffset, exifOffset, exifLength) => {
+    const entries = [
+      concat([u16(1), u16(0), u16(1), u32(gridOffset), u32(8)]),
+      ...Array.from({ length: tiles }, (_, i) =>
+        concat([u16(2 + i), u16(0), u16(1), u32(tileOffset + i * tileSize), u32(tileSize)]),
+      ),
+      concat([u16(exifId), u16(0), u16(1), u32(exifOffset), u32(exifLength)]),
+    ];
+    const iloc = box('iloc', u32(0), new Uint8Array([0x44, 0x00]), u16(entries.length), ...entries);
+    const dimg = box('dimg', u16(1), u16(tiles), ...Array.from({ length: tiles }, (_, i) => u16(2 + i)));
+    const cdsc = box('cdsc', u16(exifId), u16(1), u16(1));
+    return box('meta', u32(0), pitm, iinf, iloc, box('iref', u32(0), dimg, cdsc), ispe);
+  };
+
+  const ftypBox = ftyp('heic', ['heic', 'mif1']);
+  const probeMeta = buildMeta(0, 0, 0, 0);
+  const gridOffset = ftypBox.length + probeMeta.length + 8;
+  const tileOffset = gridOffset + 8;
+  const exifOffset = tileOffset + tiles * tileSize;
+  const exifLength = 64;
+  const metaBox = buildMeta(tileOffset, gridOffset, exifOffset, exifLength);
+  const mdat = box(
+    'mdat',
+    new Uint8Array(8).fill(0x00),
+    ...Array.from({ length: tiles }, () => tileBytes),
+    new Uint8Array(exifLength).fill(0x22),
+  );
+  return { file: concat([ftypBox, metaBox, mdat]), tileOffset, tileSize };
 }

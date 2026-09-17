@@ -194,7 +194,12 @@ main { padding: clamp(1rem, 3vw, 2rem) clamp(1rem, 4vw, 2.2rem) 4rem; }
   content: ""; position: absolute; left: 55%; top: 50%; transform: translate(-50%, -50%);
   border-left: 13px solid var(--text); border-top: 8px solid transparent; border-bottom: 8px solid transparent;
 }
-.tile.is-motion .thumb-play, .tile:hover .thumb-play { opacity: 0.85; }
+/* The play affordance marks files that actually play. It used to appear on
+   hover for every tile, which made an ordinary photograph look like a motion
+   picture the moment the pointer crossed it. */
+.tile[data-kind="motion"] .thumb-play,
+.tile[data-kind="live"] .thumb-play,
+.tile[data-kind="video"] .thumb-play { opacity: 0.85; }
 .tile-body { padding: 0.6rem 0.7rem 0.7rem; display: grid; gap: 0.3rem; align-content: start; }
 .tile-name { font-size: 0.88rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile-meta { color: var(--muted); font-size: 0.74rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
@@ -234,6 +239,9 @@ main { padding: clamp(1rem, 3vw, 2rem) clamp(1rem, 4vw, 2.2rem) 4rem; }
 }
 .stage-media img, .stage-media video {
   max-width: 100%; max-height: 68vh; border-radius: var(--radius-sm); background: #000;
+  /* Stated rather than assumed: the tile and the viewer must agree about EXIF
+     orientation, and both go through the same <img> decoding path. */
+  image-orientation: from-image;
 }
 .placeholder { color: var(--muted); text-align: center; max-width: 44ch; font-size: 0.88rem; }
 .stage-bar {

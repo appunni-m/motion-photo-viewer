@@ -205,6 +205,266 @@ try {
     .catch(() => false);
   assert(painted, 'a thumbnail was decoded into its canvas');
 
+  // ---- EXIF orientation ---------------------------------------------------
+  //
+  // `rotated-portrait.jpg` holds landscape pixels with Orientation=6, so a
+  // viewer that ignores the tag draws it sideways. The tile and the viewer must
+  // agree, which is why both decode through an <img>.
+  const measureTile = async (name) => {
+    // Bring the tile on screen first: thumbnails are decoded lazily, and a tile
+    // below the fold has nothing painted yet.
+    await page
+      .locator('.tile', { hasText: name })
+      .first()
+      .scrollIntoViewIfNeeded()
+      .catch(() => {});
+    const painted = await page
+      .waitForFunction(
+        (tileName) => {
+          const tile = [...document.querySelectorAll('.tile')].find(
+            (t) => t.querySelector('.tile-name')?.textContent === tileName,
+          );
+          const canvas = tile?.querySelector('canvas');
+          if (!canvas) return false;
+          const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+          let lit = 0;
+          for (let i = 0; i < data.length; i += 4 * 53) {
+            if (data[i] > 40 || data[i + 1] > 40 || data[i + 2] > 40) lit += 1;
+          }
+          return lit > 20;
+        },
+        name,
+        { timeout: 20000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    if (!painted) return null;
+    return page.evaluate((tileName) => {
+      const tile = [...document.querySelectorAll('.tile')].find(
+        (t) => t.querySelector('.tile-name')?.textContent === tileName,
+      );
+      const canvas = tile.querySelector('canvas');
+      const { data, width, height } = canvas
+        .getContext('2d')
+        .getImageData(0, 0, canvas.width, canvas.height);
+      let minX = width;
+      let maxX = -1;
+      let minY = height;
+      let maxY = -1;
+      for (let y = 0; y < height; y += 2) {
+        for (let x = 0; x < width; x += 2) {
+          const i = (y * width + x) * 4;
+          if (data[i] > 40 || data[i + 1] > 40 || data[i + 2] > 40) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      return { w: maxX - minX, h: maxY - minY };
+    }, name);
+  };
+
+  // Exact geometry, recorded by the renderer: what was drawn, from what source
+  // size, and with which rotation applied. Pixel measurement alone cannot tell
+  // a rotated picture from a pattern with dark corners.
+  const geometry = await (async () => {
+    await page
+      .locator('.tile', { hasText: 'rotated-portrait.jpg' })
+      .first()
+      .scrollIntoViewIfNeeded()
+      .catch(() => {});
+    await page.waitForTimeout(600);
+    return page.evaluate(() => {
+      const read = (name) => {
+        const tile = [...document.querySelectorAll('.tile')].find(
+          (t) => t.querySelector('.tile-name')?.textContent === name,
+        );
+        const canvas = tile?.querySelector('canvas');
+        return canvas
+          ? {
+              drawn: canvas.dataset.drawn,
+              source: canvas.dataset.source,
+              orientation: canvas.dataset.orientation,
+            }
+          : null;
+      };
+      return {
+        control: read('solid.jpg'),
+        rotated: read('rotated-portrait.jpg'),
+        preview: read('rotated-preview.jpg'),
+      };
+    });
+  })();
+  const dims = (value) => (value ?? '0x0').split('x').map(Number);
+  for (const [label, expectedOrientation] of [
+    ['control', '1'],
+    ['rotated', '1'], // the engine applied the tag itself
+    ['preview', '6'], // the embedded preview carries no tag, so we apply it
+  ]) {
+    const entry = geometry[label];
+    if (!entry?.drawn) {
+      bad(`${label}: nothing recorded by the renderer`);
+      continue;
+    }
+    const [dw, dh] = dims(entry.drawn);
+    const [sw, sh] = dims(entry.source);
+    assert(
+      entry.orientation === expectedOrientation,
+      `${label}: rotation applied is ${entry.orientation} (expected ${expectedOrientation})`,
+    );
+    if (label === 'control') {
+      assert(dw > dh && sw > sh, `${label}: landscape in, landscape out (${entry.source} -> ${entry.drawn})`);
+    } else {
+      assert(dh > dw, `${label}: drawn portrait (${entry.source} -> ${entry.drawn})`);
+    }
+  }
+
+  // The same picture twice: once as the camera stored it, once with
+  // Orientation=6. Their painted areas must have swapped proportions.
+  // A control image with no EXIF at all, to compare against.
+  const control = await measureTile('photo.jpg');
+  assert(
+    control && control.w > control.h,
+    `the unrotated control tile is landscape (${control ? `${control.w}x${control.h}` : 'nothing painted'})`,
+  );
+
+  const portrait = await measureTile('rotated-portrait.jpg');
+  assert(
+    portrait && portrait.w > 10 && portrait.h > portrait.w,
+    `the rotated tile is drawn portrait (${portrait ? `${portrait.w}x${portrait.h}` : 'nothing painted'})`,
+  );
+
+  // The same picture, but the tile is drawn from an IFD1 preview that has no
+  // orientation tag of its own: the viewer has to apply the main image's.
+  const preview = await measureTile('rotated-preview.jpg');
+  assert(
+    preview && preview.w > 10 && preview.h > preview.w,
+    `the tile drawn from an unrotated preview is still portrait (${preview ? `${preview.w}x${preview.h}` : 'nothing painted'})`,
+  );
+
+  const viewerPortrait = await (async () => {
+    await page.evaluate(() => {
+      const tile = [...document.querySelectorAll('.tile')].find(
+        (t) => t.querySelector('.tile-name')?.textContent === 'rotated-portrait.jpg',
+      );
+      tile?.click();
+    });
+    await page.waitForSelector('#viewer[open]', { timeout: 10000 });
+    const size = await page.evaluate(async () => {
+      const img = document.getElementById('viewer-still');
+      if (!img || img.hidden) return null;
+      if (!img.complete) await new Promise((r) => { img.onload = r; img.onerror = r; });
+      return { w: img.naturalWidth, h: img.naturalHeight };
+    });
+    await page.locator('#viewer-quit').click();
+    return size;
+  })();
+  assert(
+    viewerPortrait && viewerPortrait.h > viewerPortrait.w,
+    `the viewer draws the same picture portrait (${viewerPortrait ? `${viewerPortrait.w}x${viewerPortrait.h}` : 'no image'})`,
+  );
+
+  // ---- ordinary pictures must not look like motion pictures ---------------
+  const stillCheck = await page.evaluate(() => {
+    const names = ['plain.heic', 'plain-still.jpg', 'photo.jpg'];
+    const out = {};
+    for (const name of names) {
+      const tile = [...document.querySelectorAll('.tile')].find(
+        (t) => t.querySelector('.tile-name')?.textContent === name,
+      );
+      if (!tile) {
+        out[name] = null;
+        continue;
+      }
+      const play = tile.querySelector('.thumb-play');
+      out[name] = {
+        kind: tile.dataset.kind,
+        opacity: play ? getComputedStyle(play).opacity : '0',
+        badges: [...tile.querySelectorAll('.badge')].map((b) => b.textContent),
+      };
+    }
+    return out;
+  });
+  for (const [name, info] of Object.entries(stillCheck)) {
+    if (!info) {
+      bad(`${name} is missing from the grid`);
+      continue;
+    }
+    assert(info.kind === 'still', `${name} is classified as a still (${info.kind})`);
+    assert(info.opacity === '0', `${name} shows no play affordance (opacity ${info.opacity})`);
+    assert(!info.badges.includes('MOTION'), `${name} carries no MOTION badge`);
+  }
+
+  // The play affordance must not appear on hover either: that is what made
+  // ordinary photographs look like motion pictures.
+  const hoverName = 'plain-still.jpg';
+  await page.locator('.tile', { hasText: hoverName }).first().hover();
+  await page.waitForTimeout(150);
+  const hoveredOpacity = await page.evaluate(() => {
+    const tile = [...document.querySelectorAll('.tile')].find(
+      (t) => t.querySelector('.tile-name')?.textContent === 'plain-still.jpg',
+    );
+    const play = tile?.querySelector('.thumb-play');
+    return play ? getComputedStyle(play).opacity : '0';
+  });
+  assert(hoveredOpacity === '0', `hovering a still keeps the play affordance hidden (${hoveredOpacity})`);
+
+  // ---- an unsupported codec must still be attempted -----------------------
+  const hevcAttempt = await page.evaluate(async () => {
+    const tile = [...document.querySelectorAll('.tile')].find(
+      (t) => t.querySelector('.tile-name')?.textContent === 'motion-hevc.heic',
+    );
+    if (!tile) return { found: false };
+    tile.click();
+    return {
+      found: true,
+      canPlay: document.createElement('video').canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"'),
+    };
+  });
+  if (!hevcAttempt.found) {
+    bad('the HEVC fixture is missing from the grid');
+  } else {
+    await page.waitForSelector('#viewer[open]', { timeout: 10000 });
+    await page.waitForFunction(
+      () => document.getElementById('viewer-name')?.textContent === 'motion-hevc.heic',
+      null,
+      { timeout: 10000 },
+    ).catch(() => {});
+    assert(
+      (await page.locator('#viewer-name').textContent()) === 'motion-hevc.heic',
+      'the HEVC fixture opened in the viewer',
+    );
+    const report = await page.locator('#viewer-report').textContent();
+    assert(
+      /"codec": ?"hvc1\.[A-C]?\d+\.[0-9a-f]+\.[HL]\d+/.test(report),
+      'the reported HEVC codec string is RFC 6381 shaped',
+    );
+    if (await page.locator('#viewer-play').isVisible()) {
+      await page.locator('#viewer-play').click();
+      const attempted = await page
+        .waitForFunction(() => Boolean(document.getElementById('viewer-video').getAttribute('src')), null, { timeout: 10000 })
+        .then(() => true)
+        .catch(() => false);
+      assert(attempted, 'playback is attempted even when canPlayType reports no support');
+      // Either it decodes (platform HEVC) or the viewer explains why - never a
+      // refusal based on the codec string alone.
+      await page.waitForTimeout(1500);
+      const state = await page.evaluate(() => {
+        const video = document.getElementById('viewer-video');
+        const placeholder = document.getElementById('viewer-placeholder');
+        return {
+          decoded: video.videoWidth > 0,
+          explained: !placeholder.hidden && /HEVC|HEVC-coded|cannot decode/.test(placeholder.textContent),
+        };
+      });
+      assert(state.decoded || state.explained, 'the clip either plays or is explained, not silently refused');
+    }
+    await page.locator('#viewer-quit').click();
+    await page.waitForTimeout(200);
+  }
+
   // ---- open the viewer and play the embedded video ------------------------
   await page.locator('.tile.is-motion').first().click();
   await page.waitForSelector('#viewer[open]', { timeout: 10000 });

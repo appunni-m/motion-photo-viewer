@@ -455,10 +455,17 @@ function openViewer(entry) {
     ui.viewerStill.hidden = false;
     ui.viewerStill.onerror = () => {
       ui.viewerStill.hidden = true;
+      const hevcStill = entry.result?.container === 'heif';
       if (playable) {
-        showPlaceholder('This browser cannot decode the still image. Press “Play motion” to watch the embedded clip.');
+        showPlaceholder(
+          hevcStill
+            ? 'This HEIC still is HEVC-coded, which this browser cannot draw. Press “Play motion” to try the embedded clip.'
+            : 'This browser cannot draw this still image. Press “Play motion” to watch the embedded clip.',
+        );
+      } else if (hevcStill) {
+        reportPlaybackFailure(entry);
       } else {
-        showPlaceholder('This browser cannot decode this still image format.');
+        showPlaceholder('This browser cannot draw this image format.');
       }
     };
   } else if (playable) {
@@ -488,14 +495,6 @@ function playMotion() {
     showPlaceholder('No playable video could be assembled for this file.');
     return;
   }
-  const support = state.previews.canPlay(entry);
-  if (support === '' && !entry.live && entry.result?.motion?.codec) {
-    showPlaceholder(
-      `This browser reports no support for ${entry.result.motion.codec}. The clip is intact — ` +
-      'Safari plays HEVC, or use “Save extracted video” and play it locally.',
-    );
-    return;
-  }
   if (!viewerState.videoLoaded) {
     ui.viewerVideo.src = url;
     ui.viewerVideo.hidden = false;
@@ -504,7 +503,38 @@ function playMotion() {
     ui.viewerStillBtn.hidden = false;
     viewerState.videoLoaded = true;
   }
-  ui.viewerVideo.play().catch(() => {});
+
+  // `canPlayType` is a hint, never a verdict: it judges a codec *string*, and an
+  // engine that answers "" may still decode the file through a hardware path.
+  // So the clip is always attempted, and the browser's own error event is what
+  // produces an explanation.
+  const codec = entry.result?.motion?.codec ?? '';
+  const support = state.previews.canPlay(entry);
+  if (support === '' && codec && !entry.live) {
+    ui.viewerTime.textContent = `trying ${codec}…`;
+  }
+  ui.viewerVideo.play().catch(() => reportPlaybackFailure(entry));
+}
+
+/** Explains a clip the engine really could not decode, without overclaiming. */
+function reportPlaybackFailure(entry) {
+  const codec = entry?.result?.motion?.codec ?? '';
+  const hevc = /^(hvc1|hev1)/.test(codec);
+  const heicStill = entry?.result?.container === 'heif';
+  const parts = [];
+  if (hevc && heicStill) {
+    parts.push('Both the picture and the clip in this HEIC are HEVC-coded, and this browser has no HEVC decoder.');
+  } else if (hevc) {
+    parts.push(`This browser cannot decode the clip's ${codec || 'HEVC'} video.`);
+  } else {
+    parts.push('This browser cannot play the extracted clip.');
+  }
+  parts.push('The file itself is intact and nothing was modified.');
+  parts.push('“Save extracted video” writes out the camera’s own MP4, and Safari — or any HEVC-capable player — opens it.');
+  if (hevc && heicStill) {
+    parts.push('For the same reason the still cannot be drawn here.');
+  }
+  showPlaceholder(parts.join(' '));
 }
 
 function showStill() {
@@ -665,6 +695,14 @@ function wireViewer() {
     } catch {
       ui.viewerCopy.textContent = 'Copy failed';
     }
+  });
+  ui.viewerVideo.addEventListener('error', () => {
+    // Only while the viewer is open and holding a real source: tearing the
+    // element down on close also fires an error for the empty source.
+    if (!ui.viewer.open || !ui.viewerVideo.getAttribute('src')) return;
+    ui.viewerVideo.hidden = true;
+    if (ui.viewerStill.getAttribute('src')) ui.viewerStill.hidden = false;
+    if (state.current) reportPlaybackFailure(state.current);
   });
   ui.viewerVideo.addEventListener('timeupdate', () => {
     const d = ui.viewerVideo.duration;

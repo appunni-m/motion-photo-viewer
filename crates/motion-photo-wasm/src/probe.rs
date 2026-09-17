@@ -168,6 +168,10 @@ impl Outcome {
                     j.begin_obj();
                     j.key_u64("off", off);
                     j.key_u64("len", len);
+                    match self.meta.thumb_orientation {
+                        Some(o) => j.key_u64("orientation", o as u64),
+                        None => j.key_null("orientation"),
+                    }
                     j.end();
                 }
                 None => j.null(),

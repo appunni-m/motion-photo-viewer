@@ -20,6 +20,10 @@ pub struct Exif {
     pub height: Option<u32>,
     /// EXIF thumbnail: absolute `(offset, length)` of an embedded JPEG.
     pub thumb: Option<(u64, u64)>,
+    /// Orientation recorded for the thumbnail itself. Usually absent: the
+    /// thumbnail is a copy of the stored pixels and needs the *main* image's
+    /// orientation applied by whoever draws it.
+    pub thumb_orientation: Option<u16>,
     /// Absolute `(offset, length)` of the maker note, for vendor markers.
     pub maker_note: Option<(u64, u64)>,
 }
@@ -127,6 +131,7 @@ fn walk_ifd(t: &Tiff, ifd_off: u64, depth: u8, out: &mut Exif) -> Option<u32> {
             match tag {
                 0x0201 => thumb_off = read_u32(t, typ, n, value_at),
                 0x0202 => thumb_len = read_u32(t, typ, n, value_at),
+                0x0112 => out.thumb_orientation = read_u32(t, typ, n, value_at).map(|v| v as u16),
                 _ => {}
             }
             continue;
