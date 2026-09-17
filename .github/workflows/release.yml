@@ -1,0 +1,120 @@
+name: Release
+
+# A tag is the release trigger. The module is rebuilt from the tagged source, so
+# the asset attached to a release is provably the one that source produces, and
+# the same verification gate runs before anything is published.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to verify (no release is created)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify the tagged source
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+
+      - name: Install the release optimizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y binaryen ffmpeg
+
+      - name: Lint the crate
+        run: make rust-lint
+
+      - name: Run the Rust unit tests
+        run: make rust-test
+
+      - name: Build the module
+        run: WASM_OPT_REQUIRED=1 make wasm
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: make install
+
+      - name: Generate real media fixtures
+        run: make fixtures
+
+      - name: Run the deterministic checks
+        run: make verify
+
+      - name: Check a real camera file
+        run: make check-real
+
+      - name: Assemble and validate the static site
+        run: make package-pages PAGES_DIR=_site
+
+      - name: Install Chromium for the browser checks
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke-test the assembled site
+        run: make verify-browser
+
+      - name: Record the version and artifact digest
+        run: |
+          version=$(grep -m1 '^version' crates/motion-photo-wasm/Cargo.toml | cut -d'"' -f2)
+          echo "crate version: $version"
+          echo "wasm sha256: $(sha256sum wasm/motion_photo_wasm.wasm | cut -d' ' -f1)"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [ "$tag" != "v$version" ]; then
+              echo "::error::tag $tag does not match crate version $version"
+              exit 1
+            fi
+            echo "tag $tag matches the crate version"
+          fi
+
+      - name: Upload the module for the release job
+        uses: actions/upload-artifact@v7
+        with:
+          name: motion-photo-wasm-release
+          path: |
+            wasm/motion_photo_wasm.wasm
+            wasm/BUILD.txt
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: verify
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v7
+
+      - name: Download the verified module
+        uses: actions/download-artifact@v8
+        with:
+          name: motion-photo-wasm-release
+          path: wasm
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Motion Photo Viewer ${GITHUB_REF_NAME}" \
+            --notes-file .github/release-notes.md \
+            --verify-tag \
+            wasm/motion_photo_wasm.wasm \
+            wasm/BUILD.txt

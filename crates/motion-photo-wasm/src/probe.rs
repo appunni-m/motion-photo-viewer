@@ -31,12 +31,14 @@ use crate::xmp::{self, Xmp};
 pub const MIN_STILL_BYTES: u64 = 128;
 /// Absolute ceiling for any single window the driver may be asked to read.
 pub const HARD_SCAN_LIMIT: u64 = 8 * 1024 * 1024;
-/// How much of the file head is enough for metadata in practice.
-pub const HEAD_WINDOW: u64 = 128 * 1024;
+/// Window sizes the driver mirrors (see `src/worker.js`). They live here as
+/// documentation of what detection is designed around, and as the ceiling the
+/// core will ask for when it needs more.
+pub const HEAD_WINDOW: u64 = 64 * 1024;
 /// Ceiling for growing the head window to finish a HEIF item table.
 pub const HEAD_WINDOW_MAX: u64 = 1024 * 1024;
-/// The first tail window tries to cover a trailer `moov`.
-pub const TAIL_WINDOW: u64 = 96 * 1024;
+/// The first tail window tries to cover a trailer `moov` or SEFT directory.
+pub const TAIL_WINDOW: u64 = 64 * 1024;
 pub const TAIL_WINDOW_MAX: u64 = 2 * 1024 * 1024;
 /// Window requested at the start of a candidate video range.
 pub const REGION_WINDOW: u64 = 192 * 1024;

@@ -86,7 +86,6 @@ export class Scanner {
       worker.__busy = true;
       worker.__entry = entry;
       this.#active += 1;
-      this.#totals.bytes = this.#totals.bytes;
       worker.__currentId = entry.id;
       worker.postMessage({ id: entry.id, type: 'scan', file: entry.file });
     }

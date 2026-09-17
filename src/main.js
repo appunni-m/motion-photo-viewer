@@ -77,7 +77,7 @@ const state = {
   sentinel: null,
   scanStart: 0,
   totalBytes: 0,
-  timers: [],
+  copyTimer: 0,
 };
 
 // ---------------------------------------------------------------- tile render
@@ -691,7 +691,8 @@ function wireViewer() {
     try {
       await navigator.clipboard.writeText(report);
       ui.viewerCopy.textContent = 'Copied';
-      state.timers.push(setTimeout(() => { ui.viewerCopy.textContent = 'Copy report'; }, 1500));
+      clearTimeout(state.copyTimer);
+      state.copyTimer = setTimeout(() => { ui.viewerCopy.textContent = 'Copy report'; }, 1500);
     } catch {
       ui.viewerCopy.textContent = 'Copy failed';
     }

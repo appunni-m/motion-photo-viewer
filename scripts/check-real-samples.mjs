@@ -160,7 +160,6 @@ if (localArg >= 0 && args[localArg + 1]) {
   const { result, stats, file } = await scan(core, bytes);
   const motion = result.motion ?? {};
   const expect = expectArg >= 0 && args[expectArg + 1] ? args[expectArg + 1].split(':').map(Number) : null;
-  assertEqual(result.container, result.container, 'container');
   ok(`container ${result.container}, kind ${result.kind}`);
   ok(`route ${motion.method} (${motion.family}, ${motion.confidence})`);
   ok(`video ${JSON.stringify(motion.video)} of ${bytes.length} bytes`);

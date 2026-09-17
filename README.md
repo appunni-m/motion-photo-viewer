@@ -4,6 +4,9 @@ Open a folder. See every motion picture in it — Samsung and Google motion
 photos, HEIC motion items, iPhone Live Photo pairs, plain videos — and play the
 embedded clip. Everything happens on your device.
 
+[![Verify and deploy](https://github.com/appunni-m/motion-photo-viewer/actions/workflows/pages.yml/badge.svg)](https://github.com/appunni-m/motion-photo-viewer/actions/workflows/pages.yml)
+[![Release](https://img.shields.io/github/v/release/appunni-m/motion-photo-viewer)](https://github.com/appunni-m/motion-photo-viewer/releases)
+
 **Live:** <https://appunni-m.github.io/motion-photo-viewer/>
 
 ![The viewer after scanning a folder of fixtures](docs/screenshot.png)
@@ -193,6 +196,13 @@ the workflow; every run after that deploys on its own.
   are detected but not stitched.
 * HEIC *still* decoding is the browser's: Chrome and Firefox cannot draw a HEIC
   today, so those tiles show a labelled placeholder.
+
+## Releasing
+
+Pushing a `v*` tag runs the full gate against the tagged source, rebuilds the
+module, and publishes a release with it attached — see
+[RELEASING.md](RELEASING.md). The live site tracks `main` on every push,
+independently of releases.
 
 ## License
 
