@@ -30,10 +30,36 @@ await rm(OUT, { recursive: true, force: true });
 await mkdir(OUT, { recursive: true });
 
 const FILES = ['index.html', 'styles.css', 'sw.js'];
-const DIRS = ['src', 'wasm', 'docs'];
+const DIRS = ['src', 'docs'];
 
 for (const file of FILES) await cp(join(ROOT, file), join(OUT, file));
 for (const dir of DIRS) await cp(join(ROOT, dir), join(OUT, dir), { recursive: true });
+
+// The wasm directory is listed rather than copied: it also holds the optimizer's
+// intermediate, which is a build artifact and does not belong in the artifact.
+await mkdir(join(OUT, 'wasm'), { recursive: true });
+await cp(join(ROOT, 'wasm', 'motion_photo_wasm.wasm'), join(OUT, 'wasm', 'motion_photo_wasm.wasm'));
+try {
+  await cp(join(ROOT, 'wasm', 'BUILD.txt'), join(OUT, 'wasm', 'BUILD.txt'));
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error;
+}
+// Optional still decoders. Nothing is shipped there by default: the viewer runs
+// without one, and `docs/DECODERS.md` describes what to drop in. Whatever is
+// there is declared in the page, so the browser never probes for a file that was
+// never installed - a 404 in every reader's console.
+let installedDecoders = [];
+try {
+  if ((await stat(join(ROOT, 'decoders'))).isDirectory()) {
+    await cp(join(ROOT, 'decoders'), join(OUT, 'decoders'), { recursive: true });
+    installedDecoders = (await readdir(join(ROOT, 'decoders')))
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => name.replace(/\.js$/, ''));
+  }
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error;
+}
+
 // The README's screenshots and the research log are repository material, not
 // things a visitor's browser should ever download.
 await rm(join(OUT, 'docs', 'screenshot.png'), { force: true });
@@ -58,7 +84,10 @@ const buildId = hash.digest('hex').slice(0, 12);
 for (const file of ['index.html', 'sw.js']) {
   const path = join(OUT, file);
   const text = await readFile(path, 'utf8');
-  await writeFile(path, text.replaceAll('__BUILD_ID__', buildId));
+  await writeFile(
+    path,
+    text.replaceAll('__BUILD_ID__', buildId).replaceAll('__DECODERS__', installedDecoders.join(',')),
+  );
 }
 
 // Stamp the wasm reference so caches key on the artifact identity.

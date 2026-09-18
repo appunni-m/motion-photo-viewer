@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.3
+
+- **A place for a decoder to plug in.** Chrome and Firefox cannot draw a HEIC
+  because it is HEVC, and no permissively licensed HEVC decoder exists to bundle.
+  The viewer now loads an optional module from `decoders/<id>.js`, offers to
+  decode a picture the browser refused, and — once the reader has said yes —
+  decodes tiles through it too. Nothing is shipped there by default, so an
+  installation without one behaves exactly as before.
+  [`docs/DECODERS.md`](docs/DECODERS.md) is the contract, with the checklist for
+  HEVC still decoding: `hvcC` through `ipma`, `iloc` extents, `grid` assembly,
+  `irot`/`imir`, WPP and tiles.
+- **The Pages artifact no longer ships the optimizer's intermediate.**
+  `wasm/.motion_photo_wasm.opt.wasm` was being copied into the site, 600 kB of
+  build output that no visitor needs.
+- The installed decoders are declared in the page when the site is assembled, so
+  a browser never probes for a module that was not installed — no 404 in the
+  console of every reader who opens a HEIC.
+
 ## 0.1.2
 
 - **A picture that cannot be drawn is no longer described as a failed clip.**

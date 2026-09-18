@@ -11,6 +11,7 @@
  *    few hundred bytes.
  */
 
+import { decoderLoaded, decodeStill } from './decoder.js';
 import { planToBlob } from './wasm.js';
 
 const THUMB_QUALITY = 'low';
@@ -68,7 +69,10 @@ export class PreviewService {
    */
   async thumbnail(entry, canvas, width) {
     if (entry.status === 'failed' || !entry.result) return 'skipped';
-    if (entry.thumbState === 'unsupported') return 'unsupported';
+    // Remembered failure, unless the reader has since opted into module
+    // decoding - that is a second chance, not the same attempt again.
+    const moduleCanHelp = entry.decodeWithModule && decoderLoaded();
+    if (entry.thumbState === 'unsupported' && !moduleCanHelp) return 'unsupported';
     const source = this.stillSource(entry);
     if (!source) return 'skipped';
 
@@ -83,12 +87,46 @@ export class PreviewService {
       drawContained(canvas, image, rotationFor(entry, source.isThumb));
       return 'ok';
     } catch {
-      // HEIC in Chrome, a corrupt slice, or a format the engine cannot draw.
+      // The engine cannot draw this one - a HEIC in Chrome, most often. An
+      // installed decoder gets a turn, but only once the reader has asked for
+      // one: decoding photographs in WebAssembly is worth a click, not a
+      // surprise on every tile.
+      if (moduleCanHelp) {
+        const frame = await this.decodeStill(entry);
+        if (frame) {
+          drawContained(canvas, frame, 1);
+          entry.thumbState = 'ok';
+          return 'ok';
+        }
+      }
       entry.thumbState = 'unsupported';
       return 'unsupported';
     } finally {
       URL.revokeObjectURL(url);
       this.#release();
+    }
+  }
+
+  /**
+   * Decodes an entry's picture with an installed module.
+   * @returns {Promise<ImageBitmap|null>}
+   */
+  async decodeStill(entry) {
+    const source = this.stillSource(entry);
+    if (!source) return null;
+    const container = entry.result?.container ?? 'unknown';
+    const frame = await decodeStill(container, new Uint8Array(await source.blob.arrayBuffer()), {
+      width: entry.result?.still?.width,
+      height: entry.result?.still?.height,
+      name: entry.name,
+    });
+    if (!frame) return null;
+    try {
+      // An ImageBitmap behaves like the <img> the rest of the code draws, so
+      // the viewer and the tiles share one drawing path.
+      return await createImageBitmap(new ImageData(frame.rgba, frame.width, frame.height));
+    } catch {
+      return null;
     }
   }
 

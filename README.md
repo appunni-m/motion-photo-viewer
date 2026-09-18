@@ -194,8 +194,23 @@ the workflow; every run after that deploys on its own.
   yet.
 * **Multi-extent HEIF video items** (a video split across several `iloc` extents)
   are detected but not stitched.
-* HEIC *still* decoding is the browser's: Chrome and Firefox cannot draw a HEIC
-  today, so those tiles show a labelled placeholder.
+* **HEIC stills need an HEVC decoder, and browsers ship none outside Safari.**
+  Chrome and Firefox therefore show a labelled placeholder with the picture's
+  real dimensions, and the inspector says exactly why. An optional decoder module
+  can fill that gap: the viewer offers to decode the picture, once, when one is
+  installed — see [`docs/DECODERS.md`](docs/DECODERS.md) for the contract and for
+  what an HEVC still decoder has to implement. Nothing is shipped by default, so
+  an installation without one costs nothing.
+
+## Optional decoders
+
+The viewer draws pictures with the browser, which covers JPEG, PNG, WebP, AVIF
+and — in Safari — HEIC. For the one gap, **HEIC outside Safari**, a decoder module
+can be installed at `decoders/<id>.js`. It is loaded only when a picture has
+already failed to draw and the reader asks for it, and the grid follows only
+after that. [`docs/DECODERS.md`](docs/DECODERS.md) has the contract, an example
+wrapper, and the checklist for HEVC still decoding — including the `grid` item
+assembly and `hvcC`/`ipma` plumbing that a generic HEVC decoder does not have.
 
 ## Releasing
 

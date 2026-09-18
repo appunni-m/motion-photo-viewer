@@ -26,6 +26,10 @@ const SITE = resolve(ROOT, argOf('--root', existsSync(join(ROOT, '_site')) ? '_s
 const SCREENSHOT = argOf('--screenshot', '');
 const FIXTURES = join(ROOT, 'tests', 'fixtures', 'generated');
 
+/** Flipped by the decoder checks: serve the stub at /decoders/hevc.js. */
+let serveStubDecoder = false;
+const STUB_DECODER = join(ROOT, 'tests', 'stub-decoder.js');
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -60,13 +64,28 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   let path = normalize(decodeURIComponent(url.pathname));
   if (path.endsWith('/')) path += 'index.html';
+  // The stub decoder stands in for a real module, without writing into the
+  // assembled site: `_site` is what gets uploaded, so a test must not touch it.
+  if (serveStubDecoder && path === '/decoders/hevc.js') {
+    res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(await readFile(STUB_DECODER));
+    return;
+  }
   const full = join(SITE, path);
   if (!full.startsWith(SITE)) {
     res.writeHead(403).end('forbidden');
     return;
   }
   try {
-    const body = await readFile(full);
+    let body = await readFile(full);
+    if (serveStubDecoder && path === '/index.html') {
+      body = Buffer.from(
+        body.toString('utf8').replace(
+          /(<meta name="motion-photo-decoders" content=")[^"]*(")/,
+          '$1hevc$2',
+        ),
+      );
+    }
     res.writeHead(200, {
       'content-type': MIME[extname(full)] ?? 'application/octet-stream',
       'cache-control': 'no-store',
@@ -447,6 +466,106 @@ try {
       await page.locator('#viewer-quit').click();
       await page.waitForTimeout(200);
     }
+  }
+
+  // ---- an installed decoder is offered, and never used unasked -------------
+  //
+  // With nothing at `decoders/`, the viewer must not promise anything: no
+  // button, and the honest explanation stands. With a module installed, the
+  // picture is still refused first - the native path always gets its chance -
+  // and only then is decoding offered, as a click rather than a surprise.
+  {
+    const offered = await page.evaluate(async () => {
+      const tile = [...document.querySelectorAll('.tile')].find(
+        (t) => t.querySelector('.tile-name')?.textContent === 'plain.heic',
+      );
+      tile?.click();
+      return true;
+    });
+    if (offered) {
+      await page.waitForSelector('#viewer[open]', { timeout: 10000 });
+      await page.waitForTimeout(600);
+      const withoutDecoder = await page.locator('#viewer-decode').isHidden();
+      assert(withoutDecoder, 'with no decoder installed, no decoding is promised');
+      await page.locator('#viewer-quit').click();
+      await page.waitForTimeout(200);
+    } else {
+      bad('the HEIC fixture is missing from the grid');
+    }
+
+    serveStubDecoder = true;
+    await page.reload({ waitUntil: 'load' });
+    await page.setInputFiles('#folder-input', FIXTURES);
+    await page.waitForSelector('.tile', { timeout: 60000 });
+    await page.waitForFunction(
+      () => document.querySelector('#cancel-scan')?.hidden !== false,
+      null,
+      { timeout: 60000 },
+    );
+
+    await page.evaluate(() => {
+      const tile = [...document.querySelectorAll('.tile')].find(
+        (t) => t.querySelector('.tile-name')?.textContent === 'plain.heic',
+      );
+      tile.click();
+    });
+    await page.waitForSelector('#viewer[open]', { timeout: 10000 });
+
+    const appeared = await page
+      .waitForSelector('#viewer-decode:not([hidden])', { timeout: 15000 })
+      .then(() => true)
+      .catch(() => false);
+    assert(appeared, 'an installed decoder is offered for a picture the browser refused');
+
+    if (appeared) {
+      await page.locator('#viewer-decode').click();
+      const decoded = await page
+        .waitForFunction(
+          () => {
+            const canvas = document.getElementById('viewer-canvas');
+            if (!canvas || canvas.hidden) return false;
+            const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+            // The stub returns magenta; anything close proves it was drawn.
+            return canvas.width === 64 && canvas.height === 48 && data[0] > 200 && data[2] > 200;
+          },
+          null,
+          { timeout: 20000 },
+        )
+        .then(() => true)
+        .catch(() => false);
+      assert(decoded, 'the decoded frame is drawn into the viewer');
+      await page.locator('#viewer-quit').click();
+      await page.waitForTimeout(400);
+
+      // The same answer is remembered for tiles, so the grid fills in too.
+      const tilePainted = await page
+        .waitForFunction(
+          () => {
+            const tile = [...document.querySelectorAll('.tile')].find(
+              (t) => t.querySelector('.tile-name')?.textContent === 'plain.heic',
+            );
+            const canvas = tile?.querySelector('canvas');
+            if (!canvas) return false;
+            const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+            return data[0] > 150 && data[1] < 100 && data[2] > 150;
+          },
+          null,
+          { timeout: 30000 },
+        )
+        .then(() => true)
+        .catch(() => false);
+      assert(tilePainted, 'the tile decodes through the module once the reader has opted in');
+    }
+
+    serveStubDecoder = false;
+    await page.reload({ waitUntil: 'load' });
+    await page.setInputFiles('#folder-input', FIXTURES);
+    await page.waitForSelector('.tile', { timeout: 60000 });
+    await page.waitForFunction(
+      () => document.querySelector('#cancel-scan')?.hidden !== false,
+      null,
+      { timeout: 60000 },
+    );
   }
 
   // ---- macOS metadata must not become tiles -------------------------------

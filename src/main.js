@@ -9,6 +9,7 @@
 import { Scanner, deepScan, preloadCore } from './scan.js';
 import { filesFromDataTransfer, filesFromInput, isScannable, pairLivePhotos, pickDirectory } from './files.js';
 import { PreviewService } from './preview.js';
+import { decoderFor, decoderStatus } from './decoder.js';
 import {
   badgesFor, capturedAt, classify, formatBytes, formatDateTime, formatDuration,
   KIND_LABEL, problemText,
@@ -46,6 +47,8 @@ const ui = {
   viewerName: el('viewer-name'),
   viewerSub: el('viewer-sub'),
   viewerStill: el('viewer-still'),
+  viewerCanvas: el('viewer-canvas'),
+  viewerDecode: el('viewer-decode'),
   viewerVideo: el('viewer-video'),
   viewerPlaceholder: el('viewer-placeholder'),
   viewerPlay: el('viewer-play'),
@@ -78,6 +81,7 @@ const state = {
   scanStart: 0,
   totalBytes: 0,
   copyTimer: 0,
+  decodeWithModule: false,
 };
 
 // ---------------------------------------------------------------- tile render
@@ -176,6 +180,9 @@ function updateTile(article) {
 /** Decodes a thumbnail only once the tile is close to the viewport. */
 function ensureThumb(article) {
   const entry = article.__entry;
+  // Once the reader has asked for WebAssembly decoding, later tiles of the same
+  // kind use it without asking again.
+  if (state.decodeWithModule) entry.decodeWithModule = true;
   if (article.__thumbRequested) return;
   article.__thumbRequested = true;
   const canvas = article.__canvas;
@@ -455,6 +462,9 @@ function openViewer(entry) {
   ui.viewerSave.hidden = !playable;
   ui.viewerTime.textContent = '';
 
+  ui.viewerCanvas.hidden = true;
+  ui.viewerDecode.hidden = true;
+
   const stillUrl = state.previews.stillUrl(entry);
   if (stillUrl) {
     ui.viewerStill.src = stillUrl;
@@ -471,6 +481,7 @@ function openViewer(entry) {
         );
       } else {
         reportStillFailure(entry);
+        offerDecode(entry);
       }
     };
   } else if (playable) {
@@ -490,6 +501,54 @@ function openViewer(entry) {
 function showPlaceholder(text) {
   ui.viewerPlaceholder.textContent = text;
   ui.viewerPlaceholder.hidden = false;
+}
+
+/**
+ * Offers to decode a picture here, when a decoder module is installed for it.
+ * The offer only appears after the browser has refused the picture, and it is
+ * never taken automatically: WebAssembly decoding of a photograph is a choice.
+ */
+async function offerDecode(entry) {
+  const container = entry?.result?.container;
+  if (!container) return;
+  const decoder = await decoderFor(container);
+  if (!decoder || state.current !== entry) return;
+  ui.viewerDecode.hidden = false;
+}
+
+async function decodeWithModule() {
+  const entry = state.current;
+  if (!entry) return;
+  ui.viewerDecode.disabled = true;
+  ui.viewerDecode.textContent = 'Decoding…';
+  try {
+    // From here on, tiles of the same kind decode too: the reader has said yes
+    // once, and the thumbnail queue keeps it to two at a time.
+    entry.decodeWithModule = true;
+    state.decodeWithModule = true;
+    const bitmap = await state.previews.decodeStill(entry);
+    if (!bitmap) {
+      ui.viewerDecode.textContent = 'Decode failed';
+      return;
+    }
+    const canvas = ui.viewerCanvas;
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d', { alpha: false }).drawImage(bitmap, 0, 0);
+    bitmap.close?.();
+    canvas.hidden = false;
+    ui.viewerStill.hidden = true;
+    ui.viewerPlaceholder.hidden = true;
+    ui.viewerDecode.hidden = true;
+    const node = ui.grid.querySelector(`[data-id="${cssEscape(entry.id)}"]`);
+    if (node) {
+      node.__thumbRequested = false;
+      ensureThumb(node);
+    }
+  } finally {
+    ui.viewerDecode.disabled = false;
+    ui.viewerDecode.textContent = 'Decode this picture';
+  }
 }
 
 function playMotion() {
@@ -729,6 +788,7 @@ function wireToolbar() {
 
 function wireViewer() {
   ui.viewerPlay.addEventListener('click', playMotion);
+  ui.viewerDecode.addEventListener('click', decodeWithModule);
   ui.viewerStillBtn.addEventListener('click', showStill);
   ui.viewerQuit.addEventListener('click', closeViewer);
   ui.viewerPrev.addEventListener('click', () => step(-1));

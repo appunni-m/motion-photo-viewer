@@ -629,8 +629,15 @@ async function main() {
 
   check('tiles and the viewer share one EXIF-orientation path', () => {
     const preview = readFileSync(join(ROOT, 'src', 'preview.js'), 'utf8');
-    assert(!/createImageBitmap\(/.test(preview), 'orientation handling must not depend on createImageBitmap');
-    assert(/new Image\(\)/.test(preview), 'tiles must decode through an <img>');
+    // Decoding a *file* through createImageBitmap is what made orientation
+    // inconsistent, so that is what is forbidden. Wrapping pixels a decoder has
+    // already produced, and already oriented, is a different thing entirely.
+    const calls = [...preview.matchAll(/createImageBitmap\(([^)]*)/g)].map((m) => m[1].trim());
+    assert(
+      calls.every((argument) => argument.startsWith('new ImageData(')),
+      `createImageBitmap may only wrap decoded pixels (found: ${calls.join(' | ') || 'none'})`,
+    );
+    assert(/new Image\(\)/.test(preview), 'tiles must decode files through an <img>');
   });
 
   check('the worker never reads a whole file implicitly', () => {
