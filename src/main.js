@@ -461,17 +461,16 @@ function openViewer(entry) {
     ui.viewerStill.hidden = false;
     ui.viewerStill.onerror = () => {
       ui.viewerStill.hidden = true;
-      const hevcStill = entry.result?.container === 'heif';
       if (playable) {
+        // A clip is available, so the picture failing is not the end of the
+        // story - say what the picture needs and what still works.
         showPlaceholder(
-          hevcStill
-            ? 'This HEIC still is HEVC-coded, which this browser cannot draw. Press “Play motion” to try the embedded clip.'
-            : 'This browser cannot draw this still image. Press “Play motion” to watch the embedded clip.',
+          entry.result?.container === 'heif'
+            ? 'This HEIC picture is HEVC-coded, which this browser cannot draw. The play button tries the clip inside it.'
+            : 'This browser cannot draw this picture. The play button watches the clip inside it.',
         );
-      } else if (hevcStill) {
-        reportPlaybackFailure(entry);
       } else {
-        showPlaceholder('This browser cannot draw this image format.');
+        reportStillFailure(entry);
       }
     };
   } else if (playable) {
@@ -522,6 +521,35 @@ function playMotion() {
   ui.viewerVideo.play().catch(() => reportPlaybackFailure(entry));
 }
 
+/**
+ * Explains a picture this engine cannot draw.
+ *
+ * Deliberately not the clip message: a HEIC still usually contains no clip at
+ * all, and telling the reader that "the extracted clip" could not be played -
+ * and to go save it - is nonsense they can see through. The picture is HEVC, the
+ * browser has no HEVC decoder, and the honest answer is which browsers do.
+ */
+function reportStillFailure(entry) {
+  const container = entry?.result?.container;
+  const heif = container === 'heif' || container === 'avif';
+  const parts = [];
+  if (heif) {
+    parts.push(
+      'This browser cannot display HEIC pictures: the picture inside is HEVC-coded, and ' +
+        'Chrome and Firefox ship no HEVC decoder.',
+    );
+    parts.push('The file is intact and nothing was modified.');
+    parts.push('Safari on macOS and iOS displays it, as does any HEIC-capable viewer.');
+    if (entry?.result?.motion?.playable) {
+      parts.push('The clip inside is a separate question - the play button tries it here.');
+    }
+  } else {
+    parts.push('This browser cannot display this picture format.');
+    parts.push('The file is intact and nothing was modified.');
+  }
+  showPlaceholder(parts.join(' '));
+}
+
 /** Explains a clip the engine really could not decode, without overclaiming. */
 function reportPlaybackFailure(entry) {
   // A Live Photo keeps its clip in a companion file, so the codec belongs to
@@ -543,7 +571,10 @@ function reportPlaybackFailure(entry) {
   } else if (codec) {
     parts.push(`This browser cannot decode the clip's ${codec} video.`);
   } else {
-    parts.push('This browser cannot play the extracted clip.');
+    parts.push(
+      'This browser cannot play the extracted clip, and its codec could not be identified from the file - ' +
+        'the detection report below shows how it was extracted.',
+    );
   }
 
   parts.push('The file itself is intact and nothing was modified.');

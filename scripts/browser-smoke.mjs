@@ -411,6 +411,44 @@ try {
   });
   assert(hoveredOpacity === '0', `hovering a still keeps the play affordance hidden (${hoveredOpacity})`);
 
+  // ---- a HEIC still that cannot be drawn is not a failed clip -------------
+  {
+    const opened = await page.evaluate(() => {
+      const tile = [...document.querySelectorAll('.tile')].find(
+        (t) => t.querySelector('.tile-name')?.textContent === 'plain.heic',
+      );
+      if (!tile) return false;
+      tile.click();
+      return true;
+    });
+    if (!opened) {
+      bad('the HEIC fixture is missing from the grid');
+    } else {
+      await page.waitForSelector('#viewer[open]', { timeout: 10000 });
+      const explained = await page
+        .waitForFunction(
+          () => {
+            const placeholder = document.getElementById('viewer-placeholder');
+            return !placeholder.hidden && /HEIC/.test(placeholder.textContent);
+          },
+          null,
+          { timeout: 20000 },
+        )
+        .then(() => true)
+        .catch(() => false);
+      const text = (await page.locator('#viewer-placeholder').textContent()).trim();
+      assert(explained, 'a HEIC that cannot be drawn is explained');
+      assert(/HEVC/.test(text), `the explanation names HEVC (${text.slice(0, 80)}…)`);
+      assert(
+        !/extracted clip|Save extracted video/.test(text),
+        'a picture failure does not talk about a clip that does not exist',
+      );
+      assert(await page.locator('#viewer-play').isHidden(), 'a plain HEIC offers no play button');
+      await page.locator('#viewer-quit').click();
+      await page.waitForTimeout(200);
+    }
+  }
+
   // ---- macOS metadata must not become tiles -------------------------------
   const junkTiles = await page.evaluate(() =>
     [...document.querySelectorAll('.tile')].filter((t) => t.querySelector('.tile-name').textContent.startsWith('._')).length,

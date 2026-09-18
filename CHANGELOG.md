@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+- **A picture that cannot be drawn is no longer described as a failed clip.**
+  Opening a plain HEIC in Chrome said "This browser cannot play the extracted
+  clip", and offered to save a clip that does not exist. A HEIC still has no clip
+  at all; the message now says what is actually true (the picture is HEVC-coded,
+  Chrome and Firefox ship no HEVC decoder, Safari displays it), and only mentions
+  the clip when the file has one.
+- **An unidentified codec is admitted rather than glossed over**, and the
+  message points at the detection report that says how the clip was extracted.
+
 ## 0.1.1
 
 Fixes found by pointing the viewer at a real photo library.
